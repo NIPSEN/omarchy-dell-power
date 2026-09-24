@@ -15,6 +15,7 @@
 #   /run/dell-power/state  (world-readable cache, refreshed as root)
 # Read-only operations additionally read:
 #   /sys/class/powercap/intel-rapl*/{name,energy_uj}   (root-only energy counters)
+#   /sys/class/intel_pmt/telem*/{guid,telem}  (Panther Lake NPU energy)
 #   /sys/class/power_supply/{BAT0,AC,ucsi-source-psy-*}/…
 #   /sys/class/hwmon/<alienware_wmi|dell_ddv>/{fan,temp}*  (fans and temperatures)
 #   /sys/class/dmi/id/sys_vendor, /sys/class/platform-profile/*/name
@@ -425,10 +426,31 @@ cmd_fan_boost() {
 #   { "source": "mains"|"typec"|"battery", "usbType": "PD"|"" ...,
 #     "systemW": platform total (RAPL psys), "batteryW": +in/-out,
 #     "componentsW": platform minus battery, "cpuW"/"ramW"/"igpuW": RAPL,
+#     "npuPresent"/"npuW": Intel NPU presence and PMT watts,
 #     "screenW": deduced residual, "packV"/"packA": pack voltage/current }
 cmd_power_chain() {
   local RAPL=/sys/class/powercap
   local UCSI='/sys/class/power_supply/ucsi-source-psy-*'
+  local npuPresent=false npu_telem="" npu_device pmt_device
+  for npu_device in /sys/class/accel/accel*; do
+    [[ -f $npu_device/device/npu_busy_time_us ]] || continue
+    [[ $(cat "$npu_device/device/vendor" 2>/dev/null) == 0x8086 ]] || continue
+    [[ $(readlink -f "$npu_device/device/driver" 2>/dev/null) == /sys/bus/pci/drivers/intel_vpu ]] || continue
+    npuPresent=true
+    break
+  done
+  if $npuPresent; then
+    # Intel's verified Panther Lake map: GUID 0x3086000, NPU energy at
+    # byte 0x670, little-endian unsigned U18.14 joules. Other generations
+    # keep the NPU row but show an unavailable watt reading.
+    for pmt_device in /sys/class/intel_pmt/telem*; do
+      [[ -r $pmt_device/guid && -r $pmt_device/telem ]] || continue
+      if [[ $(cat "$pmt_device/guid" 2>/dev/null) == 0x3086000 ]]; then
+        npu_telem=$pmt_device/telem
+        break
+      fi
+    done
+  fi
 
   rapl_energy() { # $1 = nom de domaine (psys, package-0, dram)
     local d
@@ -441,12 +463,17 @@ cmd_power_chain() {
   }
 
   local e_psys e_pkg e_dram e_core e_uncore f_psys f_pkg f_dram f_core f_uncore
+  local npu_before="" npu_after="" npu_start="" npu_end=""
   local v1 i1 v2 i2
   e_psys=$(rapl_energy psys) || e_psys=""
   e_pkg=$(rapl_energy package-0) || e_pkg=""
   e_dram=$(rapl_energy dram) || e_dram=""
   e_core=$(rapl_energy core) || e_core=""
   e_uncore=$(rapl_energy uncore) || e_uncore=""
+  if [[ -n $npu_telem ]]; then
+    npu_before=$(od -An -tu4 -j 1648 -N 4 "$npu_telem" 2>/dev/null) || npu_before=""
+    npu_start=$(date +%s%N)
+  fi
   v1=$(cat "$BAT/voltage_now" 2>/dev/null) || v1=""
   i1=$(cat "$BAT/current_now" 2>/dev/null) || i1=""
   sleep 1
@@ -455,6 +482,10 @@ cmd_power_chain() {
   f_dram=$(rapl_energy dram) || f_dram=""
   f_core=$(rapl_energy core) || f_core=""
   f_uncore=$(rapl_energy uncore) || f_uncore=""
+  if [[ -n $npu_telem ]]; then
+    npu_after=$(od -An -tu4 -j 1648 -N 4 "$npu_telem" 2>/dev/null) || npu_after=""
+    npu_end=$(date +%s%N)
+  fi
   v2=$(cat "$BAT/voltage_now" 2>/dev/null) || v2=""
   i2=$(cat "$BAT/current_now" 2>/dev/null) || i2=""
   # -- end of sampling --
@@ -463,7 +494,12 @@ cmd_power_chain() {
     awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", (b - a) / 1e6 }'
   }
 
-  local systemW=null cpuW=null ramW=null coreW=null uncoreW=null igpuW=null
+  local systemW=null cpuW=null ramW=null coreW=null uncoreW=null igpuW=null npuW=null
+  if [[ $npu_before =~ ^[[:space:]]*[0-9]+[[:space:]]*$ && $npu_after =~ ^[[:space:]]*[0-9]+[[:space:]]*$ ]]; then
+    npuW=$(awk -v a="$npu_before" -v b="$npu_after" -v start="$npu_start" -v end="$npu_end" \
+      'BEGIN { dt = (end - start) / 1e9; delta = b - a; if (delta < 0) delta += 4294967296; \
+        if (dt <= 0 || dt > 3 || delta < 0) { print "null"; exit } printf "%.1f", delta / 16384 / dt }')
+  fi
   [[ -n $e_psys && -n $f_psys ]] && systemW=$(watts "$e_psys" "$f_psys")
   [[ -n $e_pkg && -n $f_pkg ]] && cpuW=$(watts "$e_pkg" "$f_pkg")
   [[ -n $e_dram && -n $f_dram ]] && ramW=$(watts "$e_dram" "$f_dram")
@@ -575,7 +611,7 @@ cmd_power_chain() {
   fi
 
   # "Other" is what the platform draws beyond the CPU package and, where the
-  # CPU reports it (dram), the memory; without dram it includes the memory.
+  # CPU reports it (dram), the memory; package power already includes the NPU.
   local screenW=null
   if [[ $componentsW != null && $cpuW != null ]]; then
     screenW=$(awk -v c="$componentsW" -v p="$cpuW" -v r="$ramW" \
@@ -586,9 +622,10 @@ cmd_power_chain() {
     --argjson b "$batteryW" --argjson y "$systemW" --argjson c "$componentsW" \
     --argjson a "$adapterW" \
     --argjson p "$cpuW" --argjson r "$ramW" --argjson e "$screenW" \
-    --argjson g "$igpuW" --argjson n "$nominalWh" --argjson w "$portW" \
+    --argjson g "$igpuW" --argjson np "$npuPresent" --argjson nw "$npuW" \
+    --argjson n "$nominalWh" --argjson w "$portW" \
     --argjson pv "$packV" --argjson pa "$packA" \
-    '{source:$s, usbType:$t, batteryW:$b, systemW:$y, adapterW:$a, componentsW:$c, cpuW:$p, ramW:$r, screenW:$e, igpuW:$g, nominalWh:$n, portW:$w, packV:$pv, packA:$pa}'
+    '{source:$s, usbType:$t, batteryW:$b, systemW:$y, adapterW:$a, componentsW:$c, cpuW:$p, ramW:$r, screenW:$e, igpuW:$g, npuPresent:$np, npuW:$nw, nominalWh:$n, portW:$w, packV:$pv, packA:$pa}'
 }
 
 cmd=${1:-}

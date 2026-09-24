@@ -15,13 +15,19 @@ boost (Alienware x16 R2 tested).
 - Battery percentage, state, size and cycle count
 - AC/battery power profiles (power-profiles-daemon)
 - **Power flow chain** — live energy flow with a fixed layout:
-  `[Source: adapter W] ⇄ [Components: CPU / iGPU / RAM / Other] ⇄ [Battery: ±W]`.
+  `[Source: adapter W] ⇄ [Components: CPU / iGPU / RAM / NPU / Other] ⇄ [Battery: ±W]`.
   Animated pixel dots show the flow direction. The adapter tile shows the
   total it provides (RAPL `psys`, which measures the platform *excluding*
   battery charge on this EC, plus the charge power). CPU and RAM come from
   the `package-0` and `dram` RAPL domains; iGPU is deduced as
-  package − core − uncore; "Other" (screen, storage, PCH, fans…) is the
-  deduced remainder (components − CPU − RAM; on CPUs without a `dram`
+  package − core − uncore. On systems with an Intel NPU, the helper reads
+  dedicated NPU energy from the Panther Lake PMT counter and shows its watts
+  in the NPU row. On other chips, or when PMT is unavailable, the row shows
+  `—`. Package RAPL already includes NPU energy, so measured NPU watts are
+  subtracted from the derived iGPU remainder to avoid counting them twice.
+  "Other" (screen, storage, PCH,
+  fans…) is the deduced remainder
+  after subtracting the entire package and RAM (on CPUs without a `dram`
   domain, such as Meteor Lake, memory is part of it and the RAM row is
   hidden). The breakdown is hidden behind
   the small `+` button on the components tile. The battery always stays on

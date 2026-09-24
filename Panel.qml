@@ -568,7 +568,24 @@ Panel {
     onTriggered: root.setupCopied = false
   }
 
-  Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: { root.refresh(); root.refreshDell(); root.refreshPowerChain() } }
+  Timer {
+    interval: 5000
+    running: root.opened
+    repeat: true
+    onTriggered: {
+      root.refresh()
+      root.refreshDell()
+      if (!componentsNode.expanded) root.refreshPowerChain()
+    }
+  }
+  // Short NPU bursts need denser samples while the breakout is visible.
+  Timer {
+    interval: 1500
+    running: root.opened && componentsNode.expanded
+    repeat: true
+    triggeredOnStart: true
+    onTriggered: root.refreshPowerChain()
+  }
 
   // Rotate the status phrase while the panel is open and we're in a
   // rotating state (charging or on battery). The text swap is wrapped in a
@@ -1267,14 +1284,14 @@ Panel {
                 var list = [
                   {
                     label: "CPU",
-                    value: root.powerChain && root.powerChain.cpuW !== null && root.powerChain.igpuW !== null
-                      ? root.plainWatt(root.powerChain.cpuW - root.powerChain.igpuW)
-                      : "—"
+                    value: root.powerChain ? root.plainWatt(Model.cpuComponentW(root.powerChain)) : "—"
                   },
-                  { label: "iGPU", value: root.powerChain ? root.plainWatt(root.powerChain.igpuW) : "—" }
+                  { label: "iGPU", value: root.powerChain ? root.plainWatt(Model.igpuComponentW(root.powerChain)) : "—" }
                 ]
                 if (root.powerChain && root.powerChain.ramW !== null)
                   list.push({ label: "RAM", value: root.plainWatt(root.powerChain.ramW) })
+                if (root.powerChain && root.powerChain.npuPresent)
+                  list.push({ label: "NPU", value: root.plainWatt(root.powerChain.npuW) })
                 list.push({ label: "Other", value: root.powerChain ? root.plainWatt(root.powerChain.screenW) : "—" })
                 return list
               }

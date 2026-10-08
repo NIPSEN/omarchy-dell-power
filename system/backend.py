@@ -647,6 +647,11 @@ class Controller:
                     rb["ok"] = True
                 except (OSError, Refused) as restore_error:
                     rb.update(ok=False, error=str(restore_error)[:512])
+            actual, actual_error = None, ""
+            try:
+                actual = hw.status(read_ppd=self.rollback_deadline is None)
+            except (OSError, Refused) as read_error:
+                actual_error = str(read_error)[:512]
             return {"ok": False, "protocolVersion": PROTOCOL_VERSION, "applied": False,
                     "error": str(error)[:512], "requested": {"operation": command, "values": values},
-                    "before": before, "actual": hw.status(read_ppd=self.rollback_deadline is None), "rollback": rb}
+                    "before": before, "actual": actual, "actualError": actual_error, "rollback": rb}

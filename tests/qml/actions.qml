@@ -33,6 +33,16 @@ ShellRoot {
     if (value !== "") control.command = control.command.concat([value])
     control.running = true
   }
+  function refusedCompletion(c, meta, actual, rollback) {
+    c.currentAction = {args: [], feature: "charging", meta: meta}
+    c.busy = true
+    c.actionHandled = false
+    c.actionExited = true; c.actionStdoutReady = true; c.actionStderrReady = true
+    c.actionOutput = JSON.stringify({protocolVersion: 1, ok: false, applied: false,
+      error: "Fixture external state changed before mutation", before: actual,
+      requested: {operation: "fixture-guard", values: []}, actual: actual, rollback: rollback})
+    c.finishAction()
+  }
   Process {
     id: control
     clearEnvironment: true
@@ -65,6 +75,40 @@ ShellRoot {
         fixture.check(c.status.wmi.mode === "Custom" && !c.protectionSnapshot, "failed preflight save prevents helper action and reverts prepared snapshot")
         fixture.gate("fail-save", "off", 3)
       } else if (fixture.stage === 3) {
+        var external = JSON.parse(JSON.stringify(c.status))
+        var beforeCharge = {mode: "Custom", start: 50, end: 80}
+        var appliedCharge = {mode: "PrimAcUse", start: 50, end: 80}
+        external.wmi.mode = "PrimAcUse"
+        c.protectionSnapshot = {before: beforeCharge, applied: appliedCharge}
+        refusedCompletion(c, {protection: true, previousSnapshot: null}, external, {attempted: false, ok: null, error: ""})
+        fixture.check(!c.protectionSnapshot && c.status.wmi.mode === "PrimAcUse",
+          "protection refusal does not claim an externally activated mode")
+        external.ppd.profile = "power-saver"; external.thermal.profile = "quiet"
+        external.controllers[0].profile = "quiet"; external.controllers[1].profile = "low-power"
+        c.policySnapshots = {profile: {before: {ppd: "balanced", dell: "custom"}, applied: {ppd: "power-saver", dell: "quiet"}}}
+        refusedCompletion(c, {policy: "saver", previousSnapshot: null}, external, {attempted: false, ok: null, error: ""})
+        fixture.check(!c.policySnapshots.profile, "profile refusal does not capture external policy ownership")
+        c.currentAction = null
+        c.policySnapshots = {brightness: {before: 500, applied: 300, max: 1000}}
+        external.brightness = 300
+        c.currentAction = {args: [], feature: "brightness", meta: {policy: "saver", previousSnapshot: null}}
+        c.busy = true; c.actionHandled = false
+        c.actionOutput = JSON.stringify({protocolVersion: 1, ok: false, applied: false,
+          error: "Fixture external brightness changed", before: external,
+          requested: {operation: "brightness-owned", values: []}, actual: external, rollback: {attempted: false, ok: null, error: ""}})
+        c.finishAction()
+        fixture.check(!c.policySnapshots.brightness, "brightness refusal cannot restore over an external cap")
+        c.protectionSnapshot = {before: beforeCharge, applied: appliedCharge}
+        refusedCompletion(c, {protection: true, previousSnapshot: null}, external, {attempted: true, ok: false, error: "fixture rollback failed"})
+        fixture.check(!!c.protectionSnapshot, "failed rollback retains a matching recovery intent")
+        c.currentAction = {args: [], feature: "charging", meta: {protection: true, previousSnapshot: null}}
+        c.busy = true; c.actionHandled = false
+        c.actionOutput = JSON.stringify({protocolVersion: 1, ok: false, applied: false,
+          error: "Fixture missing transaction context", rollback: {attempted: false, ok: null, error: ""}})
+        c.finishAction()
+        fixture.check(!!c.protectionSnapshot, "incomplete error envelope cannot prove no hardware write")
+        fixture.stage = 34
+      } else if (fixture.stage === 34 && c.status.wmi.mode === "Custom" && c.status.ppd.profile === "balanced" && c.status.thermal.profile === "custom") {
         c.enableProtection()
         fixture.stage = 4
       } else if (fixture.stage === 4 && !c.busy && c.status.wmi.mode === "PrimAcUse") {
@@ -132,6 +176,14 @@ ShellRoot {
       } else if (fixture.stage === 18 && !c.busy && !c.policyState.episode) {
         fixture.check(!c.policySnapshots.profile && !c.policySnapshots.brightness, "saver exit retires stale snapshots without restoration")
         fixture.check(c.status.thermal.profile === "performance" && c.status.brightness === 250, "external settings survive saver exit")
+        c.setFeature("saver", false, false)
+        c.loaded = false
+        c.setProfile("balanced")
+        fixture.stage = 19
+      } else if (fixture.stage === 19 && !c.busy && !c.bridgeInFlight && !c.bridgeQueue.length && c.status.ppd.profile === "balanced") {
+        fixture.check(!c.loaded && !c.policyState.episode && !c.protectionSnapshot,
+          "manual preference saving remains independent of unavailable private snapshots")
+        c.loaded = true
         fixture.finish()
       }
     }

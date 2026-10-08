@@ -86,6 +86,9 @@ def prepare(directory, fixture="shell.qml"):
     }
     for original, replacement in substitutions.items(): text = text.replace(original, replacement)
     if any(original in text for original in substitutions): raise AssertionError('Unredirected fixture process path')
+    if fixture == 'ipc-stale.qml':
+        text = text.replace('  id: root\n', '  id: root\n  property bool fixtureDropNotification: false\n', 1)
+        text = text.replace('onFileChanged: reload()', 'onFileChanged: if (!root.fixtureDropNotification) reload()')
     controller.write_text(text)
     for name in ('home', 'state', 'config', 'cache', 'runtime'):
         (root / name).mkdir(mode=0o700)
@@ -156,6 +159,8 @@ def run_fixture(fixture):
             bridge = [json.loads(line) for line in (root / 'bridge.jsonl').read_text().splitlines()]
             assert any(item['operation'] == 'save' and not item['ok'] for item in bridge)
             assert any(item['operation'] == 'remember' and not item['ok'] for item in bridge)
+            assert any(item['operation'] == 'remember' and item['ok'] for item in bridge)
+            assert (root / 'state/omarchy/powerprofiles/ac').read_text().strip() == 'balanced', 'Manual AC preference must persist even when private snapshot loading is unavailable'
         assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
         assert stat.S_IMODE(snapshot.parent.stat().st_mode) == 0o700
         print(f"Offscreen QML {fixture} checks passed: {len(evidence['passed'])} assertions; {len(commands)} fixture operations; private snapshot checks verified.")
@@ -207,7 +212,7 @@ def run_ipc_fixture(fixture="ipc.qml"):
                         while time.monotonic() < deadline:
                             if call('pendingCount', target='fixture.shutdown') == '0': return
                             time.sleep(0.05)
-                        raise AssertionError('Latest file acknowledgment did not clear pending settings')
+                        raise AssertionError('Latest file acknowledgment did not clear pending settings: ' + json.dumps({'pending': call('pendingValues', target='fixture.shutdown'), 'diagnostics': diagnostics(), 'file': json.loads(config_path.read_text())}))
                     acknowledged()
                     call('setFeature', 'telemetry', 'true', 'true')  # local A, acknowledged
                     acknowledged()
@@ -232,6 +237,33 @@ def run_ipc_fixture(fixture="ipc.qml"):
                     assert persisted['powerFlowEnabled'] is True and persisted['telemetryEnabled'] is False
                     assert persisted['chargeLimitStep'] == 8
                     print('Delayed A after local A+B preserves B through local C and latest file acknowledgment.')
+                    call('hold', 'true', target='fixture.shutdown')
+                    call('dropNotification', 'true', target='fixture.shutdown')
+                    call('setFeature', 'telemetry', 'true', 'true')
+                    time.sleep(0.15)  # Immediate read observes old file; final write has no notification.
+                    assert call('pendingCount', target='fixture.shutdown') != '0'
+                    call('flush', target='fixture.shutdown')
+                    acknowledged()
+                    remaining = int(call('retryBudget', target='fixture.shutdown'))
+                    assert 0 <= remaining < 20, 'Delayed acknowledgment must consume the retry budget'
+                    time.sleep(0.25)
+                    assert int(call('retryBudget', target='fixture.shutdown')) == remaining, 'Acknowledgment must stop rereads'
+                    call('dropNotification', 'false', target='fixture.shutdown')
+                    call('setFeature', 'telemetry', 'false', 'false')
+                    acknowledged()
+                    print('Bounded reread acknowledges delayed final bytes even without a file notification.')
+                    call('hold', 'true', target='fixture.shutdown')
+                    call('setFeature', 'powerFlow', 'false', 'false')
+                    deadline = time.monotonic() + 3
+                    while time.monotonic() < deadline:
+                        if call('retryBudget', target='fixture.shutdown') == '0': break
+                        time.sleep(0.05)
+                    else: raise AssertionError('Unacknowledged persistence exceeded reread budget')
+                    assert call('pendingCount', target='fixture.shutdown') != '0', 'Exhausted retries must retain intended settings'
+                    assert json.loads(config_path.read_text())['bar']['layout']['right'][0]['powerFlowEnabled'] is True, 'Rereads must never rewrite the file'
+                    call('flush', target='fixture.shutdown')
+                    acknowledged()
+                    print('Unacknowledged persistence exhausts twenty rereads without clearing intent or rewriting the file.')
                     config = json.loads(config_path.read_text())
                     config['bar']['layout']['right'][0]['chargeLimitStep'] = 9
                     config['bar']['layout']['right'][0]['batteryDetailsVisible'] = True

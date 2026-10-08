@@ -186,6 +186,70 @@ class FixtureCase(unittest.TestCase):
         self.assertEqual(result["rollback"]["ok"], rolled_back, result)
 
 
+class TransactionReportingTests(FixtureCase):
+    """A failed final status read must not erase the known transaction outcome."""
+
+    def execute_with_unreadable_final_state(self, args, read_error):
+        before = self.hw.status()
+        with mock.patch.object(self.hw, "status", side_effect=[before, read_error]) as status:
+            result = self.controller.execute(args)
+        self.assertEqual(status.call_count, 2)
+        self.assertEqual(result["protocolVersion"], 1)
+        self.assertEqual(result["before"], before)
+        self.assertEqual(result["requested"], {"operation": args[0], "values": args[1:]})
+        self.assertIn("actual", result)
+        self.assertIsNone(result["actual"])
+        self.assertEqual(result["actualError"], str(read_error))
+        return result
+
+    def test_failed_rollback_is_preserved_when_final_status_is_unreadable(self):
+        for exception in (OSError, backend.Refused):
+            with self.subTest(exception=exception.__name__):
+                self.native()
+                self.hw.events.clear()
+                self.hw.faults.clear()
+                self.hw.fault(BAT + "/charge_types", "Custom", "skip")
+                self.hw.fault(BAT + "/charge_control_start_threshold", "50")
+                result = self.execute_with_unreadable_final_state(
+                    ["charge-thresholds", "60", "80"], exception("Final status unavailable"))
+                self.failure(result, attempted=True, rolled_back=False)
+                self.assertIn("readback", result["error"])
+                self.assertIn("injected write failure", result["rollback"]["error"])
+                self.assertIn(("write", BAT + "/charge_control_start_threshold", "60"), self.writes())
+                self.assertEqual(self.hw.charging()["start"], 60)
+
+    def test_successful_rollback_is_preserved_when_final_status_is_unreadable(self):
+        for exception in (OSError, backend.Refused):
+            with self.subTest(exception=exception.__name__):
+                self.native()
+                self.hw.events.clear()
+                self.hw.faults.clear()
+                self.hw.fault(BAT + "/charge_types", "Custom", "skip")
+                result = self.execute_with_unreadable_final_state(
+                    ["charge-thresholds", "60", "80"], exception("Final status unavailable"))
+                self.failure(result, attempted=True, rolled_back=True)
+                self.assertIn("readback", result["error"])
+                self.assertEqual(result["rollback"]["error"], "")
+                self.assertIn(("write", BAT + "/charge_control_start_threshold", "60"), self.writes())
+                charging = self.hw.charging()
+                self.assertEqual((charging["mode"], charging["start"], charging["end"]),
+                                 ("Standard", 50, 100))
+
+    def test_guarded_no_write_refusal_is_preserved_when_final_status_is_unreadable(self):
+        for exception in (OSError, backend.Refused):
+            with self.subTest(exception=exception.__name__):
+                # Another actor already selected the projected protection state.
+                self.native("Trickle")
+                self.hw.events.clear()
+                result = self.execute_with_unreadable_final_state(
+                    ["charge-protect", "Standard", "50", "100"], exception("Final status unavailable"))
+                self.failure(result, attempted=False, rolled_back=None)
+                self.assertIn("Protection already active", result["error"])
+                self.assertEqual(result["rollback"]["error"], "")
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.hw.charging()["mode"], "PrimAcUse")
+
+
 class DiscoveryTests(FixtureCase):
     def test_da14260_dual_controller_selected_by_name_not_position(self):
         self.native()

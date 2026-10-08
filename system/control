@@ -35,7 +35,7 @@ if __name__ == "__main__":
     except (OSError, Refused) as error:
         result = {"ok": False, "protocolVersion": PROTOCOL_VERSION, "applied": False,
                   "error": str(error)[:512],
-                  "rollback": {"attempted": False, "ok": None, "error": ""}}
+                  "rollback": {"attempted": None, "ok": None, "error": "Transaction outcome unavailable"}}
     signal.alarm(0)
     encoded = json.dumps(result, separators=(",", ":"), allow_nan=False)
     if len(encoded) > 65536:

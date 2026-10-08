@@ -35,7 +35,10 @@ ShellRoot {
     function stop(): void { Qt.quit() }
     function canonicalReady(): bool { return service.controller.canonicalFileLoaded }
     function pendingCount(): int { return Object.keys(service.controller.pendingSettings).length }
+    function pendingValues(): string { return JSON.stringify(service.controller.pendingSettings) }
+    function retryBudget(): int { return service.controller.canonicalReadRetries }
     function hold(value: bool): void { fixture.holdWrites = value }
+    function dropNotification(value: bool): void { service.controller.fixtureDropNotification = value }
     function flush(): void { configWriter.setText(JSON.stringify(fixture.actualConfig)); fixture.holdWrites = false }
   }
   Timer { interval: 15000; running: true; onTriggered: Qt.quit() }

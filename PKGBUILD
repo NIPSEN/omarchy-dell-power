@@ -1,7 +1,7 @@
 # Local development package. No downloads, daemons, udev changes or firmware writes.
 pkgname=dell-power-extension
 pkgver=2.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc='Transactional Dell/Alienware power helper for the local Omarchy extension'
 arch=('any')
 license=('MIT')

@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class PackageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        packages = list(ROOT.glob('dell-power-extension-*.pkg.tar.zst'))
-        if len(packages) != 1:
+        listed = subprocess.check_output(['/usr/bin/makepkg','--packagelist'],cwd=ROOT,text=True,timeout=15)
+        packages = [Path(line) for line in listed.splitlines()]
+        if len(packages) != 1 or not packages[0].is_file():
             raise AssertionError('Build exactly one local artifact with make package before checks')
         cls.archive = tarfile.open(packages[0], 'r:zst')
 

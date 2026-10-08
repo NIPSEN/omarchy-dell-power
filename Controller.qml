@@ -18,6 +18,7 @@ Item {
   property var settings: Logic.canonical(shell ? shell.barConfig : null, pluginId)
   property bool canonicalFileLoaded: false
   property var pendingSettings: ({})
+  property int canonicalReadRetries: 0
   property var status: null
   property var dellStatus: null
   property var batteryInfo: ({})
@@ -144,6 +145,9 @@ Item {
   }
   function writeSettings(next) {
     if (shell) shell.updateEntryInline(pluginId, next)
+    // FileView coalesces a reload while an earlier read is in flight. A write
+    // notification during that read can therefore acknowledge only old bytes.
+    canonicalReadRetries = 20
     canonicalConfig.reload()
   }
   function refresh() {
@@ -253,21 +257,25 @@ Item {
     }
     var action = currentAction
     if (!result || result.protocolVersion !== 1 || !result.ok || result.applied !== true) {
+      var noWriteProved = result && result.protocolVersion === 1 && result.applied === false
+        && result.before && result.requested && Object.prototype.hasOwnProperty.call(result, "actual")
+        && result.rollback && result.rollback.attempted === false
       error = result && result.error ? result.error : "Privileged action failed or was cancelled"
+      if (result && result.actualError) error += " (final state unavailable: " + result.actualError + ")"
       if (result && result.rollback && result.rollback.attempted)
         error += result.rollback.ok ? " (previous state restored)" : " (rollback failed: " + result.rollback.error + ")"
       if (action.meta.policy) {
         policyState = Policy.noteManual(policyState, action.feature === "brightness" ? "brightness" : "profile")
         policiesArmed = false
       }
-      if (action.meta.protection && result && result.actual && protectionSnapshot
-          && Logic.sameCharge(result.actual, protectionSnapshot.before)) protectionSnapshot = action.meta.previousSnapshot || null
+      if (action.meta.protection && (noWriteProved || (result && result.actual && protectionSnapshot
+          && Logic.sameCharge(result.actual, protectionSnapshot.before)))) protectionSnapshot = action.meta.previousSnapshot || null
       if (action.meta.policy === "saver" && !action.meta.restore) {
         var retained = Object.assign({}, policySnapshots)
         var target = action.feature === "brightness" ? "brightness" : "profile"
         var intent = retained[target]
-        var beforeProved = result && result.actual && intent && (target === "profile"
-          ? Logic.sameProfile(result.actual, intent.before) : result.actual.brightness === intent.before)
+        var beforeProved = noWriteProved || (result && result.actual && intent && (target === "profile"
+          ? Logic.sameProfile(result.actual, intent.before) : result.actual.brightness === intent.before))
         if (beforeProved) {
           if (action.meta.previousSnapshot) retained[target] = action.meta.previousSnapshot
           else delete retained[target]
@@ -396,7 +404,7 @@ Item {
       policySnapshots: policySnapshots, policyState: policyState})
   }
   function runBridge() {
-    if (bridgeProc.running || bridgeInFlight || !loaded) return
+    if (bridgeProc.running || bridgeInFlight || (!loaded && !bridgeQueue.length)) return
     if (preparedAction && pendingState) {
       bridgeOperation = "save"; bridgeProc.command = ["/usr/bin/python3", "-I", bridgePath, "save"]
     } else if (bridgeQueue.length) {
@@ -605,6 +613,11 @@ Item {
     watchChanges: true; printErrors: false
     onLoaded: root.loadCanonical(text())
     onFileChanged: reload()
+  }
+  Timer {
+    interval: 100; repeat: true
+    running: root.canonicalReadRetries > 0 && Object.keys(root.pendingSettings).length > 0
+    onTriggered: { root.canonicalReadRetries--; canonicalConfig.reload() }
   }
   component CappedCollector: StdioCollector {
     id: capped

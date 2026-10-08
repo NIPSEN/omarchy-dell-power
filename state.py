@@ -60,7 +60,12 @@ def atomic_write(path, data):
 def ownership(home):
     try:
         config = json.loads((home / ".config/omarchy/shell.json").read_text())
+        version = config.get("version") if isinstance(config, dict) else None
+        if isinstance(version, bool) or not isinstance(version, (int, float)) or version != 1:
+            raise ValueError("Cannot establish ownership from invalid shell configuration")
         disabled = config.get("disabledPlugins", [])
+        if not isinstance(disabled, list) or not all(isinstance(item, str) for item in disabled):
+            raise ValueError("Disabled plugins must be a string list")
         # The stock service is implicitly loaded unless explicitly disabled.
         stock = Path("/usr/share/omarchy/shell/plugins/services/battery/Service.qml").exists()
         conflicts = []

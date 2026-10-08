@@ -12,12 +12,18 @@ ShellRoot {
   property var failed: []
   property var panels: []
   property var service: null
-  Component.onCompleted: service = reloadFactory.createObject(fixture)
+  property int serviceGapDetachCount: 0
+  property int serviceGapAttachCount: 0
+  Component.onCompleted: {
+    service = reloadFactory.createObject(fixture)
+    shellApi.currentService = service
+  }
 
   QtObject {
     id: shellApi
+    property var currentService: null
     property var barConfig: ({layout: {left: [], center: [], right: [{id: "local.dell-power-extension"}]}})
-    function serviceFor(id) { return id === "local.dell-power-extension" ? fixture.service : null }
+    function serviceFor(id) { return id === "local.dell-power-extension" ? currentService : null }
     function updateEntryInline(id, settings) {
       barConfig = {layout: {left: [], center: [], right: [Object.assign({}, settings, {id: id})]}}
       return true
@@ -33,15 +39,29 @@ ShellRoot {
     fontFamily: "sans-serif"
     barSize: 32
   }
-  Component { id: panelFactory; Plugin.Panel { bar: barApi } }
+  Component { id: panelFactory; Plugin.Panel { bar: barApi; settings: shellApi.barConfig.layout.right[0] } }
   Component { id: reloadFactory; Plugin.Service { shell: shellApi } }
+  Connections {
+    target: fixture.panels.length ? fixture.panels[0] : null
+    function onAttachedControllerChanged() { fixture.recordGapAttachment(target) }
+  }
+  Connections {
+    target: fixture.panels.length > 1 ? fixture.panels[1] : null
+    function onAttachedControllerChanged() { fixture.recordGapAttachment(target) }
+  }
+
+  function recordGapAttachment(panel) {
+    if (stage === 7 && panel.attachedController === null) serviceGapDetachCount++
+    if (stage === 8 && panel.attachedController === service.controller) serviceGapAttachCount++
+  }
 
   function check(value, label) {
     if (value) passed.push(label)
     else { failed.push(label); console.error("ASSERTION FAILED: " + label) }
   }
   function finish() {
-    console.log("FIXTURE_RESULT " + JSON.stringify({passed: passed, failed: failed, stage: stage}))
+    console.log("FIXTURE_RESULT " + JSON.stringify({passed: passed, failed: failed, stage: stage,
+      serviceGapDetachCount: serviceGapDetachCount, serviceGapAttachCount: serviceGapAttachCount}))
     ticker.running = false
     Qt.quit()
   }
@@ -123,16 +143,46 @@ ShellRoot {
         c.persist()
         fixture.stage = 3
       } else if (fixture.stage === 3 && fixture.ticks > 30) {
+        fixture.check(fixture.panels[0].dellProbed && fixture.panels[1].dellProbed, "service lookup gap begins with probed live panels")
+        fixture.stage = 7
+        shellApi.currentService = null
+      } else if (fixture.stage === 7) {
+        var a = fixture.panels[0], b = fixture.panels[1]
+        fixture.check(a.powerController === null && b.powerController === null && !a.helperMissing && !b.helperMissing,
+          "null service lookup safely clears helper state on living panels")
+        fixture.check(a.batteryPresent && b.batteryPresent && a.batteryInfo.percentage === "67%" && b.batteryInfo.percentage === "67%"
+          && a.chargeLimitStep === 7 && b.chargeLimitStep === 7 && !a.opened && b.opened,
+          "null service lookup retains battery fallback inline settings and open state")
+        fixture.check(fixture.serviceGapDetachCount === 2 && Object.keys(c.panels).length === 0
+          && Object.keys(c.panelObjects).length === 0 && !c.anyOpen && !c.samplingSensors && !c.samplingFlow,
+          "null service lookup detaches each living panel and leaves no sampler")
+        fixture.stage = 8
+        shellApi.currentService = fixture.service
+      } else if (fixture.stage === 8) {
+        var a = fixture.panels[0], b = fixture.panels[1]
+        fixture.check(a.powerController === c && b.powerController === c && fixture.serviceGapAttachCount === 2
+          && Object.keys(c.panels).length === 2 && Object.keys(c.panelObjects).length === 2
+          && c.panelObjects[a.panelToken] === a && c.panelObjects[b.panelToken] === b,
+          "service lookup restoration reattaches both original panels exactly once")
+        fixture.check(c.panels[a.panelToken] === false && c.panels[b.panelToken] === true && c.anyOpen
+          && a.dellWmiReady && b.dellWmiReady && !c.samplingSensors && !c.samplingFlow,
+          "service lookup restoration preserves open state and disabled samplers")
+        fixture.stage = 9
+      } else if (fixture.stage === 9) {
+        fixture.check(fixture.serviceGapAttachCount === 2 && fixture.serviceGapDetachCount === 2
+          && Object.keys(c.panels).length === 2, "restored service attachments remain stable on the next event-loop turn")
         fixture.panels[0].destroy()
         fixture.panels[1].destroy()
         fixture.stage = 4
       } else if (fixture.stage === 4) {
         fixture.check(Object.keys(c.panels).length === 0 && !c.anyOpen, "destroyed panels detach without orphan sampler")
         fixture.service.destroy()
+        shellApi.currentService = null
         fixture.service = null
         fixture.stage = 5
       } else if (fixture.stage === 5) {
         fixture.service = reloadFactory.createObject(fixture)
+        shellApi.currentService = fixture.service
         fixture.stage = 6
       } else if (fixture.stage === 6 && c.loaded && c.helperCompatible) {
         fixture.check(!!c.protectionSnapshot, "controller restores owned snapshot after restart")

@@ -134,6 +134,8 @@ def run_fixture(fixture):
         snapshot = root / 'state/dell-power-extension/snapshots.json'
         saved = json.loads(snapshot.read_text())
         if fixture == 'shell.qml':
+            assert evidence['serviceGapDetachCount'] == 2, 'service lookup gap must detach each living panel once'
+            assert evidence['serviceGapAttachCount'] == 2, 'service lookup restoration must reattach each living panel once'
             for operation in ('sensors', 'power-chain'):
                 assert sum(item['operation'] == operation for item in commands) == 1, operation + ' must have one shared initial sample'
             assert saved['protectionSnapshot']['before']['mode'] == 'Standard'

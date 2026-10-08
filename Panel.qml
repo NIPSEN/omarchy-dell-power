@@ -53,7 +53,7 @@ Panel {
   readonly property var controlFans: dellStatus ? dellStatus.fans : []
   readonly property bool sensorsReady: featureShown("telemetry") && (fans.length > 0 || temps.length > 0)
   readonly property bool fanBoostAvailable: capability("fanBoost") && featureShown("fanBoost")
-  readonly property bool helperMissing: dellProbed && (!powerController.helperCompatible || dellStatus === null)
+  readonly property bool helperMissing: powerController !== null && dellProbed && (!powerController.helperCompatible || dellStatus === null)
 
   function capability(name) {
     return !!(powerController && powerController.helperCompatible && powerController.status && powerController.status.capabilities && powerController.status.capabilities[name])

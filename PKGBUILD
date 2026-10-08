@@ -5,6 +5,7 @@ pkgrel=1
 pkgdesc='Transactional Dell/Alienware power helper for the local Omarchy extension'
 arch=('any')
 license=('MIT')
+options=('!debug')
 depends=('python' 'power-profiles-daemon' 'sudo' 'polkit' 'dbus')
 source=()
 sha256sums=()

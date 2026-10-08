@@ -49,5 +49,12 @@ class PackageTests(unittest.TestCase):
             self.assertFalse(m['barWidget']['defaults'][key+'Enabled'])
         subprocess.run(['/usr/share/omarchy/bin/omarchy-plugin-validate',str(ROOT)],check=True,capture_output=True,timeout=15)
 
+    def test_packagelist_matches_single_produced_script_package(self):
+        listed = subprocess.check_output(['/usr/bin/makepkg','--packagelist'],cwd=ROOT,text=True,timeout=15)
+        paths=[Path(line) for line in listed.splitlines()]
+        self.assertEqual(len(paths),1)
+        self.assertTrue(paths[0].is_file())
+        self.assertNotIn('-debug-',paths[0].name)
+
 
 if __name__ == '__main__': unittest.main()

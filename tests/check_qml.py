@@ -14,6 +14,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_ROOT = Path('/usr/share/omarchy/shell')
@@ -61,8 +62,8 @@ def prepare(directory, fixture="shell.qml"):
     fixture_status['brightness'] = 500
     fixture_status['brightnessMax'] = 1000
     (root / 'status.json').write_text(json.dumps(fixture_status))
-    (root / 'flags.json').write_text(json.dumps({'actions': fixture == 'actions.qml'}))
-    if fixture == 'actions.qml':
+    (root / 'flags.json').write_text(json.dumps({'actions': fixture == 'actions.qml', 'isolated-ownership': fixture.startswith('ipc')}))
+    if fixture == 'actions.qml' or fixture.startswith('ipc'):
         (plugin / 'state.py').rename(plugin / 'real_state.py')
         shutil.copy2(ROOT / 'tests/qml/bridge.py', plugin / 'state.py')
         shutil.copy2(ROOT / 'tests/qml/control.py', root / 'fixture-control.py')
@@ -88,8 +89,12 @@ def prepare(directory, fixture="shell.qml"):
     controller.write_text(text)
     for name in ('home', 'state', 'config', 'cache', 'runtime'):
         (root / name).mkdir(mode=0o700)
+    if fixture == 'ipc-stale.qml':
+        config = root / 'home/.config/omarchy/shell.json'
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'version': 1, 'bar': {'layout': {'right': [{'id': 'local.dell-power-extension', 'chargeLimitStep': 4}]}}}))
     env = {key: value for key, value in os.environ.items()
-           if key not in {'DISPLAY', 'WAYLAND_DISPLAY', 'HYPRLAND_INSTANCE_SIGNATURE', 'DBUS_SESSION_BUS_ADDRESS', 'OMARCHY_PATH'}}
+           if key not in {'DISPLAY', 'WAYLAND_DISPLAY', 'HYPRLAND_INSTANCE_SIGNATURE', 'DBUS_SESSION_BUS_ADDRESS', 'OMARCHY_PATH', 'QS_CONFIG_PATH', 'QS_CONFIG_NAME', 'QS_MANIFEST'}}
     env.update(QT_QPA_PLATFORM='offscreen', QT_QPA_PLATFORMTHEME='none', QT_QUICK_CONTROLS_STYLE='Basic', QSG_RHI_BACKEND='software',
                HOME=str(root / 'home'), XDG_STATE_HOME=str(root / 'state'),
                XDG_CONFIG_HOME=str(root / 'config'), XDG_CACHE_HOME=str(root / 'cache'),
@@ -155,9 +160,105 @@ def run_fixture(fixture):
         for label in evidence['passed']: print('  PASS ' + label)
 
 
+def run_ipc_fixture(fixture="ipc.qml"):
+    """Only communicates with the newly spawned temporary fixture's exact PID."""
+    with tempfile.TemporaryDirectory(prefix='dell-qml-ipc-') as directory:
+        root, env = prepare(directory, fixture)
+        with (root / 'ipc.log').open('w+') as log:
+            process = subprocess.Popen(['qs', '--no-color', '-p', str(root)], env=env, stdout=log, stderr=subprocess.STDOUT)
+            calls = []
+            last_ready_error = ''
+            def call(method, *arguments, target='local.dell-power-extension'):
+                result = subprocess.run(['qs', 'ipc', '--pid', str(process.pid), 'call', target, method, *arguments],
+                                        env=env, capture_output=True, text=True, timeout=4)
+                if result.returncode: raise AssertionError(result.stdout + result.stderr)
+                return result.stdout.strip()
+            def diagnostics(): return json.loads(call('diagnostics'))
+            try:
+                deadline = time.monotonic() + 6
+                while time.monotonic() < deadline:
+                    try:
+                        initial = diagnostics()
+                        if initial['loaded'] and initial['helperCompatible'] and initial['panelCount'] == 2 and (fixture != 'ipc-stale.qml' or call('canonicalReady', target='fixture.shutdown') == 'true'): break
+                    except (AssertionError, ValueError) as error: last_ready_error = str(error)
+                    time.sleep(0.1)
+                else: raise AssertionError('Isolated fixture IPC did not become ready: ' + last_ready_error)
+                for feature, enabled, visible in [('telemetry','true','true'), ('powerFlow','true','true'), ('telemetry','false','false'),
+                                                   ('powerFlow','false','false'), ('powerFlow','1','1'), ('powerFlow','0','0')]:
+                    try:
+                        response = call('setFeature', feature, enabled, visible)
+                        state = diagnostics()
+                        calls.append({'args':[feature,enabled,visible], 'enabled':state['settings'][feature+'Enabled'],
+                                      'visible':state['settings'][feature+'Visible'], 'step':state['settings']['chargeLimitStep'], 'telemetry':state['settings']['telemetryEnabled'], 'flow':state['settings']['powerFlowEnabled']})
+                    except AssertionError as error: calls.append({'args':[feature,enabled,visible], 'error':str(error)})
+                print('IPC_ROUNDTRIPS ' + fixture + ' ' + json.dumps(calls))
+                for row in calls[:4]:
+                    assert row.get('enabled') == (row['args'][1] == 'true'), str(row)
+                    assert row.get('visible') == (row['args'][2] == 'true'), str(row)
+                    assert row.get('step') == 4, 'IPC setting changes must retain preexisting marker step'
+                assert calls[1]['telemetry'] is True and calls[1]['flow'] is True, 'second change must retain first feature change'
+                assert calls[2]['telemetry'] is False and calls[2]['flow'] is True, 'disabling one feature must retain the other'
+                if fixture == 'ipc-stale.qml':
+                    config_path = root / 'home/.config/omarchy/shell.json'
+                    def acknowledged():
+                        deadline = time.monotonic() + 4
+                        while time.monotonic() < deadline:
+                            if call('pendingCount', target='fixture.shutdown') == '0': return
+                            time.sleep(0.05)
+                        raise AssertionError('Latest file acknowledgment did not clear pending settings')
+                    acknowledged()
+                    call('setFeature', 'telemetry', 'true', 'true')  # local A, acknowledged
+                    acknowledged()
+                    delayed_a = json.loads(config_path.read_text())
+                    call('hold', 'true', target='fixture.shutdown')
+                    call('setFeature', 'powerFlow', 'true', 'true')  # local B, not acknowledged
+                    delayed_a['bar']['layout']['right'][0]['chargeLimitStep'] = 8
+                    config_path.write_text(json.dumps(delayed_a))  # delayed A plus unrelated external field
+                    deadline = time.monotonic() + 4
+                    while time.monotonic() < deadline:
+                        pending = diagnostics()['settings']
+                        if pending['chargeLimitStep'] == 8: break
+                        time.sleep(0.05)
+                    else: raise AssertionError('Unrelated external field did not merge while writes pending')
+                    assert pending['powerFlowEnabled'] is True, 'Delayed A must retain pending local B'
+                    call('setFeature', 'telemetry', 'false', 'false')  # local C before B acknowledgment
+                    pending = diagnostics()['settings']
+                    assert pending['powerFlowEnabled'] is True and pending['telemetryEnabled'] is False
+                    call('flush', target='fixture.shutdown')
+                    acknowledged()
+                    persisted = json.loads(config_path.read_text())['bar']['layout']['right'][0]
+                    assert persisted['powerFlowEnabled'] is True and persisted['telemetryEnabled'] is False
+                    assert persisted['chargeLimitStep'] == 8
+                    print('Delayed A after local A+B preserves B through local C and latest file acknowledgment.')
+                    config = json.loads(config_path.read_text())
+                    config['bar']['layout']['right'][0]['chargeLimitStep'] = 9
+                    config['bar']['layout']['right'][0]['batteryDetailsVisible'] = True
+                    config_path.write_text(json.dumps(config))
+                    deadline = time.monotonic() + 4
+                    while time.monotonic() < deadline:
+                        external = diagnostics()['settings']
+                        if external['chargeLimitStep'] == 9 and external['batteryDetailsVisible']: break
+                        time.sleep(0.05)
+                    else: raise AssertionError('External canonical file edit did not reach shared controller')
+                    print('External canonical file edit supersedes stale service facade.')
+                print('Isolated production IPC boolean/camelCase roundtrips passed.')
+            finally:
+                try: call('stop', target='fixture.shutdown')
+                except (AssertionError, subprocess.TimeoutExpired): process.terminate()
+                try: process.wait(timeout=3)
+                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=3)
+                log.seek(0)
+                output = log.read()
+                errors = [line for line in output.splitlines() if any(value in line for value in ('TypeError', 'ReferenceError', 'Failed to start IPC'))]
+                if errors: print('Fixture IPC log errors:', errors)
+                if not calls: print(output[:12000])
+
+
 def main():
     run_fixture('shell.qml')
     run_fixture('actions.qml')
+    run_ipc_fixture()
+    run_ipc_fixture('ipc-stale.qml')
 
 
 if __name__ == '__main__': main()

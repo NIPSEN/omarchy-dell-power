@@ -16,6 +16,8 @@ Item {
     HOME: Quickshell.env("HOME"), XDG_STATE_HOME: Quickshell.env("XDG_STATE_HOME"),
     XDG_RUNTIME_DIR: Quickshell.env("XDG_RUNTIME_DIR")})
   property var settings: Logic.canonical(shell ? shell.barConfig : null, pluginId)
+  property bool canonicalFileLoaded: false
+  property var pendingSettings: ({})
   property var status: null
   property var dellStatus: null
   property var batteryInfo: ({})
@@ -74,8 +76,9 @@ Item {
     if (!Object.prototype.hasOwnProperty.call(Logic.defaults(), key)) return
     var next = Object.assign({}, settings)
     next[key] = value
+    var pending = Object.assign({}, pendingSettings); pending[key] = value; pendingSettings = pending
     settings = next
-    if (shell) shell.updateEntryInline(pluginId, next)
+    writeSettings(next)
     if (/^(saver|brightness)/.test(key)) policiesArmed = true
     evaluatePolicies()
   }
@@ -84,6 +87,7 @@ Item {
     var next = Object.assign({}, settings)
     next[name + "Enabled"] = enabled === true
     next[name + "Visible"] = visible === true
+    var patch = {}; patch[name + "Enabled"] = enabled === true; patch[name + "Visible"] = visible === true
     if (name === "automation" && enabled && !settings.automationEnabled) {
       if (!status || !status.thermal || !status.ppd || !status.ppd.available) {
         error = "Verify current system and Dell profiles before enabling automation"
@@ -92,10 +96,12 @@ Item {
       var actualPair = Logic.profile(status)
       if (!next.acProfile) next.acProfile = actualPair
       if (!next.batteryProfile) next.batteryProfile = actualPair
+      patch.acProfile = next.acProfile; patch.batteryProfile = next.batteryProfile
       policyState = Object.assign({}, policyState, {lastSource: ""})
     }
+    pendingSettings = Object.assign({}, pendingSettings, patch)
     settings = next
-    if (shell) shell.updateEntryInline(pluginId, next)
+    writeSettings(next)
     if (name === "automation" || name === "saver" || name === "brightness") policiesArmed = true
     evaluatePolicies()
   }
@@ -104,8 +110,9 @@ Item {
         || !status || !status.thermal || status.thermal.choices.indexOf(dell) < 0) return
     var next = Object.assign({}, settings)
     next[source + "Profile"] = {ppd: ppd, dell: dell}
+    var pending = Object.assign({}, pendingSettings); pending[source + "Profile"] = next[source + "Profile"]; pendingSettings = pending
     settings = next
-    if (shell) shell.updateEntryInline(pluginId, next)
+    writeSettings(next)
     policyState = Object.assign({}, policyState, {lastSource: ""})
     policiesArmed = true
     evaluatePolicies()
@@ -123,6 +130,22 @@ Item {
     var objects = Object.assign({}, panelObjects); delete objects[String(token)]; panelObjects = objects
   }
   function json(raw) { try { return JSON.parse(raw) } catch(e) { return null } }
+  function loadCanonical(raw) {
+    var config = json(raw)
+    if (!config || config.version !== 1 || !config.bar) { canonicalFileLoaded = false; return }
+    canonicalFileLoaded = true
+    acceptCanonical(Logic.canonical(config.bar, pluginId))
+  }
+  function acceptCanonical(canonical) {
+    var keys = Object.keys(pendingSettings)
+    var acknowledged = keys.every(function(key) { return JSON.stringify(canonical[key]) === JSON.stringify(pendingSettings[key]) })
+    if (acknowledged) pendingSettings = ({})
+    settings = Object.assign({}, canonical, pendingSettings)
+  }
+  function writeSettings(next) {
+    if (shell) shell.updateEntryInline(pluginId, next)
+    canonicalConfig.reload()
+  }
   function refresh() {
     if (!statusProc.running && !busy) statusProc.running = true
     if (!batteryProc.running) batteryProc.running = true
@@ -481,7 +504,9 @@ Item {
   Connections {
     target: root.shell
     function onBarConfigChanged() {
-      root.settings = Logic.canonical(root.shell.barConfig, root.pluginId)
+      // Older installed shells publish this facade before their readonly
+      // barConfig binding updates. The actual inline file is authoritative.
+      if (!root.canonicalFileLoaded) root.acceptCanonical(Logic.canonical(root.shell.barConfig, root.pluginId))
     }
   }
   Connections {
@@ -573,6 +598,13 @@ Item {
     onStarted: if (root.bridgeOperation === "save") { root.activeSaveText = root.pendingState; write(root.pendingState); root.pendingState = ""; stdinEnabled = false }
     onExited: { root.bridgeExited = true; root.consumeBridge() }
     stdout: CappedCollector { proc: bridgeProc; onFinished: function(t) { root.bridgeOutput = t; root.bridgeOutputReady = true; root.consumeBridge() } }
+  }
+  FileView {
+    id: canonicalConfig
+    path: Quickshell.env("HOME") + "/.config/omarchy/shell.json"
+    watchChanges: true; printErrors: false
+    onLoaded: root.loadCanonical(text())
+    onFileChanged: reload()
   }
   component CappedCollector: StdioCollector {
     id: capped

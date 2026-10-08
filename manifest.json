@@ -1,15 +1,17 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.nipsen.dell-power",
+  "id": "local.dell-power-extension",
   "name": "Dell Power",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "author": "NIPSEN",
-  "description": "Battery, Dell and Alienware charge limit, thermal modes, fans, power profile, and system stats",
+  "description": "Configurable Dell and Alienware power and battery controls with optional telemetry and policies",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "service"
   ],
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "Panel.qml",
+    "service": "Service.qml"
   },
   "barWidget": {
     "displayName": "Dell Power",
@@ -18,20 +20,189 @@
     "allowMultiple": false,
     "defaults": {
       "showPercentage": false,
-      "chargeLimitStep": 5
+      "chargeLimitStep": 5,
+      "syncPpd": true,
+      "saverEnter": 20,
+      "saverExit": 25,
+      "brightnessCap": 30,
+      "chargingEnabled": true,
+      "chargingVisible": true,
+      "thresholdsEnabled": true,
+      "thresholdsVisible": true,
+      "thermalEnabled": true,
+      "thermalVisible": true,
+      "systemProfilesEnabled": true,
+      "systemProfilesVisible": true,
+      "batteryDetailsEnabled": true,
+      "batteryDetailsVisible": false,
+      "usbEnabled": true,
+      "usbVisible": true,
+      "fanBoostEnabled": true,
+      "fanBoostVisible": true,
+      "telemetryEnabled": false,
+      "telemetryVisible": false,
+      "powerFlowEnabled": false,
+      "powerFlowVisible": false,
+      "automationEnabled": false,
+      "automationVisible": false,
+      "saverEnabled": false,
+      "saverVisible": false,
+      "brightnessEnabled": false,
+      "brightnessVisible": false
     },
     "schema": [
       {
         "key": "showPercentage",
         "type": "boolean",
-        "label": "Show battery percentage in the bar"
+        "label": "showPercentage"
       },
       {
         "key": "chargeLimitStep",
         "type": "integer",
-        "label": "Charge limit step"
+        "label": "chargeLimitStep"
+      },
+      {
+        "key": "syncPpd",
+        "type": "boolean",
+        "label": "syncPpd"
+      },
+      {
+        "key": "saverEnter",
+        "type": "integer",
+        "label": "saverEnter"
+      },
+      {
+        "key": "saverExit",
+        "type": "integer",
+        "label": "saverExit"
+      },
+      {
+        "key": "brightnessCap",
+        "type": "integer",
+        "label": "brightnessCap"
+      },
+      {
+        "key": "chargingEnabled",
+        "type": "boolean",
+        "label": "chargingEnabled"
+      },
+      {
+        "key": "chargingVisible",
+        "type": "boolean",
+        "label": "chargingVisible"
+      },
+      {
+        "key": "thresholdsEnabled",
+        "type": "boolean",
+        "label": "thresholdsEnabled"
+      },
+      {
+        "key": "thresholdsVisible",
+        "type": "boolean",
+        "label": "thresholdsVisible"
+      },
+      {
+        "key": "thermalEnabled",
+        "type": "boolean",
+        "label": "thermalEnabled"
+      },
+      {
+        "key": "thermalVisible",
+        "type": "boolean",
+        "label": "thermalVisible"
+      },
+      {
+        "key": "systemProfilesEnabled",
+        "type": "boolean",
+        "label": "systemProfilesEnabled"
+      },
+      {
+        "key": "systemProfilesVisible",
+        "type": "boolean",
+        "label": "systemProfilesVisible"
+      },
+      {
+        "key": "batteryDetailsEnabled",
+        "type": "boolean",
+        "label": "batteryDetailsEnabled"
+      },
+      {
+        "key": "batteryDetailsVisible",
+        "type": "boolean",
+        "label": "batteryDetailsVisible"
+      },
+      {
+        "key": "usbEnabled",
+        "type": "boolean",
+        "label": "usbEnabled"
+      },
+      {
+        "key": "usbVisible",
+        "type": "boolean",
+        "label": "usbVisible"
+      },
+      {
+        "key": "fanBoostEnabled",
+        "type": "boolean",
+        "label": "fanBoostEnabled"
+      },
+      {
+        "key": "fanBoostVisible",
+        "type": "boolean",
+        "label": "fanBoostVisible"
+      },
+      {
+        "key": "telemetryEnabled",
+        "type": "boolean",
+        "label": "telemetryEnabled"
+      },
+      {
+        "key": "telemetryVisible",
+        "type": "boolean",
+        "label": "telemetryVisible"
+      },
+      {
+        "key": "powerFlowEnabled",
+        "type": "boolean",
+        "label": "powerFlowEnabled"
+      },
+      {
+        "key": "powerFlowVisible",
+        "type": "boolean",
+        "label": "powerFlowVisible"
+      },
+      {
+        "key": "automationEnabled",
+        "type": "boolean",
+        "label": "automationEnabled"
+      },
+      {
+        "key": "automationVisible",
+        "type": "boolean",
+        "label": "automationVisible"
+      },
+      {
+        "key": "saverEnabled",
+        "type": "boolean",
+        "label": "saverEnabled"
+      },
+      {
+        "key": "saverVisible",
+        "type": "boolean",
+        "label": "saverVisible"
+      },
+      {
+        "key": "brightnessEnabled",
+        "type": "boolean",
+        "label": "brightnessEnabled"
+      },
+      {
+        "key": "brightnessVisible",
+        "type": "boolean",
+        "label": "brightnessVisible"
       }
-    ]
+    ],
+    "defaultSection": "right"
   },
   "omarchy": {
     "derivedFrom": "omarchy.power"

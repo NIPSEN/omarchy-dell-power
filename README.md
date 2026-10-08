@@ -1,295 +1,155 @@
-# Dell Power — Omarchy bar widget
+# Dell Power extension for Omarchy
 
-Battery status, power profiles, live power flow, and **Dell charge limit
-control** for the Omarchy bar. Derived from the built-in `omarchy.power`
-widget, extended with charge-limit, charge-mode and power-option controls for
-Dell laptops exposed through `dell-smm-hwmon` / `dell-wmi-sysman`
-(Latitude 7390 tested), and for **Alienware laptops**: charge limits through
-the BIOS settings, the firmware's thermal modes, fans, temperatures and fan
-boost (Alienware x16 R2 tested).
+This local fork extends NIPSEN’s Dell Power Quickshell panel with DA14260 native charging support, shared control state, configurable features and optional power policies. It preserves the battery display, threshold markers, Omarchy profile picker, keyboard navigation, theme, USB controls and supported Alienware modes and fan boost.
 
-![Dell Power panel — battery hero with draggable charge thresholds, power flow chain, charge mode and USB options](preview.png)
+The implementation target is a locally installed build ready for user testing. Offline fixture checks and read-only installation smoke checks do not establish physical charging enforcement, real thermal behavior or user approval of the UI. Current evidence belongs in the checkout’s uncommitted `VALIDATION.md`.
 
-## Features
+![Original Dell Power panel, showing the retained battery, thresholds, profiles, USB controls and optional flow presentation](preview.png)
 
-- Battery percentage, state, size and cycle count
-- AC/battery power profiles (power-profiles-daemon)
-- **Power flow chain** — live energy flow with a fixed layout:
-  `[Source: adapter W] ⇄ [Components: CPU / iGPU / RAM / Other] ⇄ [Battery: ±W]`.
-  Animated pixel dots show the flow direction. The adapter tile shows the
-  total it provides (RAPL `psys`, which measures the platform *excluding*
-  battery charge on this EC, plus the charge power). CPU and RAM come from
-  the `package-0` and `dram` RAPL domains; iGPU is deduced as
-  package − core − uncore; "Other" (screen, storage, PCH, fans…) is the
-  deduced remainder (components − CPU − RAM; on CPUs without a `dram`
-  domain, such as Meteor Lake, memory is part of it and the RAM row is
-  hidden). The breakdown is hidden behind
-  the small `+` button on the components tile. The battery always stays on
-  the right. On battery, component draw is measured from the battery
-  discharge. The battery current sign is corrected from the battery STATE
-  (the EC reports unsigned current even while discharging), so a weak USB-C
-  adapter that leaves the battery powering the laptop is shown correctly:
-  negative battery flow, tiny adapter contribution. The battery tile also
-  shows live pack voltage and current (`8.68 V · +1.8 A` — same ±
-  convention as the watts). The sampling runs inside the privileged helper
-  (`dell-charge-limit power-chain`): the RAPL counters stay root-only and
-  the helper returns only 1-second aggregate watts. No helper → the whole
-  power-flow section simply stays hidden.
-- **Charge limit on the battery bar** — the start/stop thresholds are drawn
-  directly on the battery progress bar (accent zone + draggable markers,
-  step 5). Dragging a marker switches the charge mode to `Custom`
-  automatically; the zone appears dimmed while another mode is active, and
-  the hover tooltip explains the state. The helper enforces the firmware
-  invariants (start 50–95, stop 55–100, stop ≥ start + 5).
-- **Charge mode** — `Standard` / `Express` / `Adaptive` / `PrimAcUse` / `Custom`
-  (Long Life Cycle is read-only on the Latitude 7390 — the firmware refuses
-  writes — so it is not exposed as a control)
-- **USB PowerShare** toggle
-- **Type-C connector power** — 7.5 W / 15 W
-- **Alienware laptops** — the `dell_laptop` battery hook only binds to
-  machines whose vendor is Dell Inc., so on Alienware the thresholds are the
-  BIOS settings `CustomChargeStart` / `CustomChargeStop` through
-  `dell-wmi-sysman` (same 50–95 / 55–100 ranges). On top of the charge limit
-  and charge mode:
-  - **Thermal mode** — every mode the firmware offers through `alienware-wmi`:
-    Cool, Quiet, Balanced, Balanced+, Performance (G-Mode on laptops that have
-    it) and Custom. power-profiles-daemon only reaches three of them, so the
-    section shows up only where the firmware offers more; a profile the daemon
-    applies later replaces the firmware mode.
-  - **Fans & temperatures** — each fan's speed against its maximum, and the
-    CPU, GPU, charger and ambient temperatures the EC reports (reading them
-    never wakes a sleeping GPU).
-  - **Fan boost** — CPU and GPU fan boost sliders in Custom mode
-    (`fan[1-4]_boost`, 0–255).
-- Controls a laptop does not have (Type-C power on the Alienware) stay hidden.
+The image shows the original presentation. The new Features view is available through **Features and settings**, or **F** while the panel has keyboard focus.
 
-## Requirements
+## Local installation and updates
 
-- Omarchy with the Quickshell plugin system
-- A Dell laptop exposing
-  `/sys/class/power_supply/BAT0/charge_control_{start,end}_threshold`
-  (`dell-smm-hwmon` / `dell_laptop`) and the
-  `/sys/class/firmware-attributes/dell-wmi-sysman` interface, or an Alienware
-  laptop exposing `CustomChargeStart` / `CustomChargeStop` through
-  `dell-wmi-sysman` (thermal modes and fan boost need the kernel's
-  `alienware-wmi` driver with its platform profile and hwmon support)
-- `jq` for the privileged helper
-- An Intel CPU for the power-flow chain (RAPL `powercap` counters) — the rest
-  of the widget works without it
+Use the local checkout on `feature/da14260-optimizations`. Installation builds privileged components locally and copies the plugin files. Editing the checkout does not update the installed copy until you rerun the installer.
 
-## Install
-
-1. Add the plugin:
-
-   ```bash
-   omarchy plugin add https://github.com/NIPSEN/omarchy-dell-power.git --enable
-   ```
-
-2. Install the privileged helper, polkit action and boot cache service:
-
-   ```bash
-   cd ~/.config/omarchy/plugins/io.github.nipsen.dell-power
-   ./install-system.sh
-   ```
-
-   Run it as your regular user: the wrapper is unprivileged and elevates only
-   the authenticated installer core via `sudo` (it will ask for your
-   password). Step 2 needs network access — the installer core, the manifest
-   and the payloads are all fetched from GitHub at the checkout's HEAD
-   commit; root never reads the user-writable checkout.
-
-3. Restart the shell if it was already running:
-
-   ```bash
-   omarchy restart shell
-   ```
-
-**Without step 2**, the widget works as a plain battery indicator
-(percentage, stats, power profiles) and every Dell section — charge limit,
-charge mode, USB, **power flow** — stays hidden, with no error and no prompt.
-The panel then shows a **DELL SETUP** section with the exact command to run
-(click it to copy to the clipboard); it disappears as soon as the helper is
-installed. The power flow requires the helper by design: the RAPL energy
-counters are root-only reads by kernel default (PLATYPUS / CVE-2020-8694) and
-there is no unprivileged path — the helper samples them as root and only
-returns 1-second aggregate watts.
-
-### What install-system.sh installs
-
-| Path | Purpose |
-|---|---|
-| `/usr/local/bin/dell-charge-limit` | Privileged helper (allowlisted operations only, incl. the power-flow sampler) |
-| `/usr/share/polkit-1/actions/io.github.nipsen.dell-power.policy` | polkit action (`auth_admin`, pinned path) — fallback path |
-| `/etc/sudoers.d/dell-power` | `NOPASSWD` sudo rule for the installing user, scoped to the helper — primary path |
-| `/etc/systemd/system/dell-power-state.service` | Oneshot priming `/run/dell-power/state` at boot |
-
-The wrapper fetches the installer core and the publisher manifest
-(`SHA256SUMS`) over HTTPS at the checkout's HEAD commit (single publisher
-host, no redirects, bounded sizes, hard deadlines), authenticates the core's
-bytes against the manifest *before* privilege is granted, then hands them to
-the interpreter through an anonymous pipe — root never opens a path from the
-user-writable checkout, and only bytes matching a commit actually pushed to
-GitHub ever run as root. The core re-fetches each payload from the publisher,
-verifies it against the manifest, and activates transactionally: the existing
-sudoers authorization is revoked first, every payload is staged (`O_EXCL`,
-0600) and digest-checked, the privileged set is committed, the installed
-files are re-hashed, and the validated sudoers rule is restored last — any
-failure rolls back to the prior complete set. Child processes run from
-absolute paths with a closed environment and process-group cleanup.
-
-Reads of thresholds and battery state need no privilege. Writes, and the
-power-flow sampling (RAPL counters are root-only by kernel default), run
-through `sudo -n /usr/local/bin/dell-charge-limit …`, which needs no password
-thanks to the narrow sudoers rule (the helper itself refuses everything
-outside its hardcoded allowlist). If the sudoers rule is missing, *writes*
-fall back to `pkexec`, which asks for the password via the Omarchy polkit
-agent; the power-flow readout stays hidden instead.
-
-## Updating
-
-The plugin is a git checkout, so updates are pulled straight from GitHub:
+Requirements are Omarchy’s Quickshell plugin system, Python, power-profiles-daemon, sudo and polkit. Building the helper package also needs Arch’s `makepkg` and build tools. Available firmware interfaces determine which controls appear; battery information and ordinary system-profile selections work without a compatible Dell helper. Intel RAPL is optional and needed only for the available power-flow measurements.
 
 ```bash
-omarchy plugin update io.github.nipsen.dell-power
+cd ~/Documents/Projects/omarchy-dell-power
+./install.sh --dry-run
+./install.sh
 ```
 
-This fast-forwards the plugin code, re-validates the manifest and reloads
-the plugins in the running shell — no restart needed.
+Run as the desktop user. The installer validates the manifest, builds and installs changed helper artifacts, checks helper protocol compatibility, copies the UI, rescans plugins and enables this fork’s own widget. Its first placement is right; updates retain existing placement. Privileged package installation and scoped authorization use sudo in a terminal or polkit outside one.
 
-**It does not update the privileged helper.** When a release changes
-`system/*` (the helper, the polkit action or the service), re-run the
-installer after updating:
+| Option | Effect |
+| --- | --- |
+| `--ui-only` | Copy the UI without installing privileged components. Battery/profile fallback remains available if the helper is absent. An existing helper must be compatible. |
+| `--no-enable` | Install without enabling the widget. |
+| `--no-restart` | Skip the update restart and report remaining reload requirements. |
+| `--dry-run` | Validate and show intended changes without installing, copying or enabling. |
+| `--uninstall` | Revoke fork-owned authorization and remove only installer-owned components. |
 
-```bash
-cd ~/.config/omarchy/plugins/io.github.nipsen.dell-power
-./install-system.sh
-```
+Options can be combined, for example `./install.sh --ui-only --no-enable --no-restart`. A normal update is another `./install.sh` from the edited checkout. Package builds use local source and do not fetch upstream commits. If a hardware transaction is active or its state cannot be established, finish the transaction before retrying an update or removal.
 
-Run from the just-updated checkout, it fetches and verifies the payloads at
-the new HEAD commit, so the installed helper always matches the plugin code.
-An older helper keeps working in the meantime — sections it cannot serve
-simply stay hidden until the helper is updated.
+Installation and loading apply no charging, profile, USB, fan or brightness settings and do not enable optional policies. Existing Omarchy widgets, profile restorers, services, udev rules and RAPL permissions remain under user control. The upstream `install-system.sh` is historical code; this fork’s supported workflow is `./install.sh`.
 
-## Security notes
+## Controls and defaults
 
-- **No world-readable RAPL counters.** Earlier versions shipped a udev rule
-  making `energy_uj` world-readable (`0444`) for the power-flow feature. That
-  restored the PLATYPUS side channel (CVE-2020-8694) and was removed: the
-  helper now samples the counters as root and returns only bounded 1-second
-  aggregate watts. Installing this version immediately restores `0400`, as
-  does `--uninstall`.
-- The sudoers rule grants the installing user passwordless root on the helper
-  path only. The helper validates every argument against hardcoded allowlists
-  (charge thresholds 50–95/55–100, six WMI attributes with fixed value sets,
-  the thermal profiles the kernel defines and the firmware lists, fan boost
-  0–255 for the Alienware CPU and GPU fan groups, plus the read-only `status`
-  and `power-chain` commands), so the reachable surface is exactly what the
-  panel exposes. Attribute names are checked against a strict pattern before
-  they are used as array keys.
-- Privileged-code provenance: root executes only publisher bytes. The
-  installer core is fetched over HTTPS at the checkout's HEAD commit,
-  digest-verified against the publisher manifest *before* elevation, and
-  handed to the interpreter through an anonymous pipe — no mutable checkout
-  path is ever opened as root. Payloads are verified against the same
-  manifest, staged `O_EXCL`, and activated transactionally: the existing
-  sudoers authorization is revoked first, the validated rule is restored
-  last, and any failure rolls back to the prior complete set. Child processes
-  run from absolute paths with a closed environment, hard deadlines and
-  process-group cleanup.
+The original Quickshell panel remains the main view. Right-click its bar button to toggle the percentage. Horizontal bars use the wider percentage layout; vertical bars retain the battery icon. In the main panel, arrows select a system profile, Enter/Space activates it, Escape closes, and Tab switches panels. **F** opens Features; arrows scroll that view.
 
-## Configuration
+Features has separate **Enabled** and **Show in panel** settings. Enabled permits ordinary actions and policy writes. Visibility only controls presentation: a hidden enabled control can serve an explicitly enabled policy. Disabling a dependency pauses policies and displays a reason. Disabling a policy stops future actions and retains already applied settings and valid restoration snapshots. An ongoing transaction finishes safely. Explicit Restore remains accessible in Features even when its ordinary control feature is disabled.
 
-Inline settings in the widget's `shell.json` bar entry:
+| Feature | Default |
+| --- | --- |
+| Battery indicator and status | Visible |
+| Charging modes and protection | Enabled, shown |
+| Custom thresholds | Enabled, shown on the battery bar |
+| Dell thermal modes and system profiles | Enabled, shown |
+| Battery health/details | Enabled, collapsed from the main view |
+| Supported USB options and Alienware fan boost | Enabled, shown |
+| Fan/temperature telemetry and detailed flow | Disabled, hidden |
+| AC/battery automation and battery saver | Disabled, hidden |
+| Saver brightness reduction | Disabled, hidden |
+
+Settings persist inline in this widget’s `shell.json` bar entry under `local.dell-power-extension`. One service/controller reads the canonical first layout entry for this id, so panel instances share settings, status, a mutation queue and optional samplers. Preserve an existing entry’s placement when editing configuration.
 
 ```json
 {
-  "id": "io.github.nipsen.dell-power",
+  "id": "local.dell-power-extension",
   "showPercentage": false,
-  "chargeLimitStep": 5
+  "chargeLimitStep": 5,
+  "syncPpd": true,
+  "telemetryEnabled": false,
+  "telemetryVisible": false,
+  "powerFlowEnabled": false,
+  "powerFlowVisible": false,
+  "automationEnabled": false,
+  "saverEnabled": false,
+  "brightnessEnabled": false
 }
 ```
 
-- `showPercentage`: show the battery percentage in the bar button. Default: `false`.
-- `chargeLimitStep`: amount changed by the − / + buttons. Default: `5`.
+Every configurable feature uses a pair such as `thermalEnabled` / `thermalVisible`. The complete defaults and configuration schema are in `manifest.json`. Configure source-profile pairs and thresholds in Features rather than enabling policies through installation.
 
-## Threshold constraints (firmware-enforced, discovered on the Latitude 7390)
+## Charging and protection
 
-- start: 50–95 %
-- end: 55–100 %
-- end ≥ start + 5 — the helper adjusts the other bound to preserve this.
+Available modes are Adaptive, Standard, ExpressCharge, Primarily AC Use and Custom. Native Dell charging interfaces are preferred; WMI supplies compatible fallback on models such as Alienware. Native `Fast` maps to ExpressCharge and `Trickle` maps to Primarily AC Use.
 
-## Behavior verified on hardware
+Drag the start or stop marker on the battery bar to apply Custom mode and both thresholds through one verified transaction. Start must be 50–95%, stop 55–100%, with a gap of at least five points. Firmware values use increments of one; `chargeLimitStep`, default five, controls UI snapping independently. The helper preserves valid intermediate bounds, checks exact readback and attempts rollback if a write fails or the firmware clamps the request.
 
-| Setting | Applies immediately | Notes |
-|---|---|---|
-| Charge thresholds (EC) | yes | Stored in the battery EC; effective only in `Custom` mode (the helper switches to it) |
-| `PrimaryBattChargeCfg` modes | yes | `PrimAcUse` was observed charging past 90 % on the Latitude 7390 — no reduced cap on this model |
-| `UsbPowerShare` | yes | |
-| `TypeCPower` | yes | |
-| `PeakShiftCfg` | yes | Not exposed in the panel yet |
-| `AdvBatteryChargeCfg` | yes | Time windows are BIOS-only on this model; not exposed yet |
-| `LongLifeCyclePriBattery` | — | Write refused by the firmware on the Latitude 7390 |
-| `PeakShiftBatteryThreshold` | — | Write accepted but not applied by the firmware on the Latitude 7390 |
+Stored markers remain dimmed in another mode. “Charging paused” describes battery state and does not prove a Custom limit is active. Estimated time to a Custom stop threshold depends on a meaningful charging rate.
 
-### Alienware x16 R2
+Battery protection selects Primarily AC Use through the same backend as the mode picker. It records the previous mode and thresholds before changing them. Restore checks fresh actual state against what the plugin applied; external or later manual changes invalidate ownership. If protection was already active, it does not invent a previous configuration. Primarily AC Use behavior depends on firmware; its name does not promise a particular percentage ceiling.
 
-| Setting | Applies immediately | Notes |
-|---|---|---|
-| `CustomChargeStart` / `CustomChargeStop` | yes | BIOS settings through `dell-wmi-sysman`; root-only reads, cached for the widget; raising the start moves the stop up with it |
-| `PrimaryBattChargeCfg` | yes | Same modes as the Latitude |
-| Thermal modes | yes | `cool quiet balanced balanced-performance performance custom`; `custom` is only accepted on the class device (`/sys/class/platform-profile/*/profile`), the legacy global file refuses it |
-| Fan boost | yes | At boost 60 the GPU fans went from about 3000 to 4000 rpm within seconds |
-| `TypeCPower`, `LongLifeCyclePriBattery`, `PeakShiftCfg` | — | Not present on this model, so hidden |
+## Profiles, USB and Alienware
 
-## Remove
+The DA14260 thermal controller is discovered by its `dell-pc` name. Supported choices include Optimized/Balanced, Cool, Quiet and Ultra Performance. Alienware controller discovery and additional choices, including Balanced+ and selectable Custom, are retained.
 
-```bash
-~/.config/omarchy/plugins/io.github.nipsen.dell-power/install-system.sh --uninstall
-omarchy plugin remove io.github.nipsen.dell-power
-```
+PPD synchronization defaults on: Quiet selects Power Saver; Cool/Balanced select Balanced; Performance selects Performance. Synchronization requires enabled, available Dell and system-profile controls. Turning it off allows supported Dell-only selections. A synchronized transaction applies PPD first, verifies individual controllers, then applies Dell; failures attempt restoration of the affected state. A global `platform_profile=custom` can mean individual controller states differ and must not be confused with Alienware’s selectable Custom mode.
 
-Uninstall first: `omarchy plugin remove` deletes the checkout that the
-uninstaller uses to resolve which published commit to fetch.
+Ordinary manual system-profile selections retain Omarchy’s AC/battery preference integration. Temporary policies do not overwrite those remembered preferences. External changes update the display; the controller does not repeatedly reassert a prior manual choice.
 
-Removing the plugin does not reset the charge thresholds stored in the
-battery EC. Set the values you want before removal, e.g.:
+USB PowerShare and Type-C 7.5 W/15 W controls appear where firmware provides them. Alienware CPU/GPU boost sliders map 0–100% to the firmware’s 0–255 values. On models requiring Custom, select that individual thermal mode first. Fan boost remains available with telemetry disabled. XPS fan management remains firmware-controlled.
 
-```bash
-sudo /usr/local/bin/dell-charge-limit set-end 100
-```
+## Battery information and optional sampling
 
-## Development
+Available firmware health, full/design capacity, cycles, battery temperature, charging state and battery rate are independent of detailed flow and CPU/fan sampling. Capacity-derived health and energy converted from charge/voltage are labelled estimates. Missing values remain unavailable.
 
-Files under `~/.config/omarchy/plugins/` hot-reload on save. If a change
-fails to apply, force a rescan with `omarchy-shell shell rescanPlugins`
-(or `omarchy restart shell` as a last resort).
+Telemetry and flow sample every five seconds only when their feature is enabled, shown, supported, and at least one panel is open. Closing the last panel, hiding or disabling sampling stops it and clears readings. Multiple panels share each sampler. Unused CPU/memory polling has been removed.
 
-When a privileged payload (`system/*`) changes, regenerate the publisher
-manifest, then commit **and push** — installs only succeed at a pushed commit
-whose manifest matches the payloads:
+The retained flow view shows source, component draw and signed battery power, with a collapsible breakdown. Raw RAPL counters remain privileged; the helper returns bounded aggregate measurements using actual elapsed time and counter wrap handling. Inferred adapter/component/residual values are estimates. Unsupported domains and breakdowns remain unavailable; this implementation does not infer an iGPU wattage where the required independent measurement is absent.
 
-```bash
-sha256sum system/installer.py system/dell-charge-limit system/*.policy system/*.service > SHA256SUMS
-```
+## Optional power policies
+
+AC/battery automation uses explicitly configured `{ppd, dell}` pairs. On first explicit enable, missing pairs are populated from verified current profiles; initialization itself applies nothing. Settings are `acProfile` and `batteryProfile`.
+
+Battery saver defaults to entering at 20% while discharging and leaving at 25% or AC connection. Features exposes both thresholds. Saver requests Power Saver and Dell Quiet where supported and takes priority over ordinary source preferences. A manual change suspends the corresponding saver override for that episode.
+
+Brightness reduction is independently enabled and defaults to an internal-display cap of 30%. It never increases a brightness already below the cap. Its `brightnessCap` is configurable.
+
+Policies pause when battery state or profile ownership is unknown, a dependency is unavailable/disabled, or another restorer conflicts. Resume reevaluates state without duplicate writes. Restoration changes only values still matching the policy’s applied snapshot; an external change remains authoritative.
+
+The stock `omarchy.battery` service restores source profiles and can therefore pause optional automation. The installer never disables it. Disabling that service is a user decision and also removes its low-battery warning. Other detected profile restorers likewise remain under user control. Ordinary manual controls remain usable while optional policy automation is paused.
+
+## Installed components and state
+
+| Path | Purpose |
+| --- | --- |
+| `~/.config/omarchy/plugins/local.dell-power-extension/` | Copied plugin and ownership marker |
+| `/usr/lib/dell-power-extension/control` | Root-owned allowlisted helper, protocol version 1 |
+| `/usr/lib/dell-power-extension/backend.py` | Privileged transaction implementation |
+| `/usr/lib/dell-power-extension/setup` | Package-owned scoped authorization setup/removal |
+| `/etc/sudoers.d/dell-power-extension` | Passwordless authorization scoped to the helper and installing user |
+| `/usr/share/polkit-1/actions/local.dell-power-extension.policy` | Authentication fallback pinned to the helper path |
+| `${XDG_STATE_HOME:-$HOME/.local/state}/dell-power-extension/` | Private snapshots and retained settings |
+
+Routine native status reads are unprivileged. Root live status is available for WMI fallback. There is no permanent privileged daemon or mandatory boot cache service. Helper results distinguish requested/actual state, application success, errors and rollback outcome. Incompatible helpers disable affected controls with an update explanation.
+
+Privileged operations use fixed commands and trusted discovery, a bounded root-owned lock, fresh reads, snapshots, verification and conditional rollback. The production CLI accepts no caller-selected hardware paths, shell commands or fixture injection. Processes use absolute executable paths, bounded time/output and closed environments. Protection and saver snapshots are durably saved before their privileged actions begin. The helper compares fresh expected state before writing; conditional profile Restore includes each individual controller. Snapshot files use atomic replacement and private permissions across shell restarts and reboot.
 
 ```bash
-omarchy plugin validate .
-node Model.test.js
-
-# qmllint (ships with qt6-declarative, not on PATH) — the shell's qs.*
-# modules must be visible as qs/Commons and qs/Ui in an import path:
-mkdir -p /tmp/qmlroot/qs   # /tmp is wiped on reboot — recreate as needed
-ln -sfn /usr/share/omarchy/shell/Commons /tmp/qmlroot/qs/Commons
-ln -sfn /usr/share/omarchy/shell/Ui /tmp/qmlroot/qs/Ui
-/usr/lib/qt6/bin/qmllint -I /tmp/qmlroot -I /usr/lib/qt6/qml Panel.qml
-# Expected: only the usual warnings (missing-property on bar/Style,
-# unqualified access in inline components) — also present on the stock
-# omarchy.power widget.
-
-qs log -p /usr/share/omarchy/shell --tail 100           # QML errors land here
+./install.sh --uninstall
 ```
 
-## License
+Removal revokes fork-owned authorization before privileged components. It retains user settings/snapshots and currently applied firmware state; it does not reset charging thresholds, thermal modes or brightness. Unrelated installations are refused rather than overwritten or removed.
 
-MIT — see LICENSE. The panel's base layout is derived from Omarchy's built-in
-`omarchy.power` widget.
+## Development and evidence
+
+```bash
+make test
+make qml
+make validate
+make package
+./install.sh --dry-run
+```
+
+`make test` includes original model behavior, presentation/policy/controller logic, backend fixtures, preservation and installer lifecycle checks. `make qml` loads copied production frontend/controller code against installed Omarchy UI modules with fixture-only process paths and simulated UPower. Its offscreen window adapter replaces only the native KeyboardPanel window, which requires Wayland; native window loading and rendering need installed-shell smoke/user testing. The fixtures also exercise multiple panels, sampler gates, shared configuration, fan independence, real private snapshot reload, simulated actions and snapshot/preference failure paths. Helper actions mutate only isolated fixture data. The tests perform no hardware writes.
+
+`make package` builds the local helper package with `makepkg`; `make validate` checks the plugin manifest and whitespace. Rerun `./install.sh` after reviewed changes to update the copied installation. Local commits require no push, upstream download or publication.
+
+Keep automated results, actual read-only installation evidence, UI approval and live hardware acceptance distinct.
+
+## Attribution and license
+
+MIT; see [LICENSE](LICENSE). Original Dell Power implementation and attribution are by NIPSEN. Its base panel layout derives from Omarchy’s built-in `omarchy.power`. Upstream reported Latitude 7390 and Alienware x16 R2 observations describe the original implementation; they do not establish current fork or DA14260 live acceptance.

@@ -192,6 +192,7 @@ Panel {
   }
 
   function refresh() { if (powerController) powerController.refresh() }
+  function openFeatures() { featuresOpen = true; root.open() }
   function setProfile(profile) { if (powerController) powerController.setProfile(profile) }
   function togglePercentage() {
     if (powerController) powerController.setSetting("showPercentage", !showPercentage)

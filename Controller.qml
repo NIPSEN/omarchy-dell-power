@@ -61,6 +61,8 @@ Item {
   property bool actionExited: false
   property bool actionStdoutReady: false
   property bool actionStderrReady: false
+  property int sensorSamples: 0
+  property int flowSamples: 0
   readonly property bool anyOpen: Object.keys(panels).some(function(k) {return panels[k] === true})
   readonly property bool samplingSensors: anyOpen && featureVisible("telemetry") && can("telemetry")
   readonly property bool samplingFlow: anyOpen && featureVisible("powerFlow") && can("powerFlow")
@@ -448,6 +450,16 @@ Item {
     function hide(): void { root.panelCommand("close") }
     function toggle(): void { root.panelCommand("toggle") }
     function togglePercentage(): void { root.setSetting("showPercentage", !root.settings.showPercentage) }
+    function features(): void { root.panelCommand("openFeatures") }
+    function setFeature(name: string, enabled: bool, visible: bool): void { root.setFeature(name, enabled, visible) }
+    function diagnostics(): string {
+      return JSON.stringify({loaded: root.loaded, probed: root.probed, helperCompatible: root.helperCompatible,
+        busy: root.busy, queueLength: root.queue.length, panelCount: Object.keys(root.panels).length,
+        anyOpen: root.anyOpen, samplingSensors: root.samplingSensors, samplingFlow: root.samplingFlow,
+        sensorSamples: root.sensorSamples, flowSamples: root.flowSamples, fans: root.fans, temps: root.temps,
+        powerChain: root.powerChain, settings: root.settings, status: root.status, ownership: root.ownership,
+        policyReason: root.policyReason, error: root.error})
+    }
   }
   function panelCommand(command) {
     var keys = Object.keys(panelObjects)
@@ -546,13 +558,13 @@ Item {
     command: ["/usr/bin/timeout", "-k", "2", "15", root.helperPath, "sensors"]
     stdout: CappedCollector { proc: sensorProc; onFinished: function(t) {
       var v = root.json(t)
-      if (root.samplingSensors && v && v.ok && v.protocolVersion === 1) { root.fans = Model.parseFans(v); root.temps = Model.parseTemps(v) }
+      if (root.samplingSensors && v && v.ok && v.protocolVersion === 1) { root.fans = Model.parseFans(v); root.temps = Model.parseTemps(v); root.sensorSamples += 1 }
     } }
   }
   Process {
     id: flowProc; clearEnvironment: true; environment: root.procEnv
     command: ["/usr/bin/timeout", "-k", "2", "15", "/usr/bin/sudo", "-n", root.helperPath, "power-chain"]
-    stdout: CappedCollector { proc: flowProc; onFinished: function(t) { if (root.samplingFlow) root.powerChain = Model.parsePowerChain(t) } }
+    stdout: CappedCollector { proc: flowProc; onFinished: function(t) { if (root.samplingFlow) { root.powerChain = Model.parsePowerChain(t); if (root.powerChain) root.flowSamples += 1 } } }
   }
   Process {
     id: bridgeProc; clearEnvironment: true; environment: root.procEnv

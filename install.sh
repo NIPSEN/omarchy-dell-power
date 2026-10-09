@@ -31,17 +31,20 @@ UPDATE=false
 
 for arg in "$@"; do
   case "$arg" in
-    --copy) MODE="copy" ;;
-    --link) MODE="link" ;;
-    --helper) HELPER_TOO=true ;;
-    --no-enable) ENABLE=false ;;
-    --no-restart) RESTART=false ;;
-    --uninstall) MODE="uninstall" ;;
-    -h|--help)
-      sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
-      exit 0
-      ;;
-    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+  --copy) MODE="copy" ;;
+  --link) MODE="link" ;;
+  --helper) HELPER_TOO=true ;;
+  --no-enable) ENABLE=false ;;
+  --no-restart) RESTART=false ;;
+  --uninstall) MODE="uninstall" ;;
+  -h | --help)
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "Unknown option: $arg" >&2
+    exit 1
+    ;;
   esac
 done
 
@@ -64,9 +67,10 @@ reload_shell() {
 }
 
 # A charge or profile change still being applied by the helper. Restarting the
-# shell then would cut the panel off from its result.
+# shell then would cut the panel off from its result. The lock is root-only, so
+# the probe goes through the helper's sudoers rule.
 helper_busy() {
-  [[ -x $HELPER ]] && "$HELPER" transaction-state 2>/dev/null | grep -q '"busy":true'
+  [[ -x $HELPER ]] && sudo -n "$HELPER" transaction-state 2>/dev/null | grep -q '"busy":true'
 }
 
 # Runs the installer core of install-system.sh as root on this checkout's files.
@@ -156,7 +160,10 @@ if $ENABLE && command -v omarchy >/dev/null 2>&1; then
   # The shell discovers the plugin asynchronously after the rescan: give it a moment
   enabled=false
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1; then enabled=true; break; fi
+    if omarchy plugin enable "$PLUGIN_ID" >/dev/null 2>&1; then
+      enabled=true
+      break
+    fi
     sleep 0.5
   done
   if $enabled; then

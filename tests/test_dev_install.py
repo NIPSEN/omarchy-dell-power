@@ -101,6 +101,24 @@ class DevInstallTests(unittest.TestCase):
             self.calls(),
         )
 
+    def test_helper_waits_for_a_running_transaction(self):
+        if not os.access("/usr/local/bin/dell-charge-limit", os.X_OK):
+            self.skipTest("needs an installed helper to probe")
+        (self.bin / "sudo").write_text(
+            f'#!/bin/sh\necho "sudo $*" >> "{self.log}"\n'
+            'case "$*" in *transaction-state) echo \'{"ok":true,"busy":true}\' ;; esac\n'
+        )
+        result = self.install("--helper", "--link", "--no-enable")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("applying a change", result.stderr)
+        self.assertIn(
+            "sudo -n /usr/local/bin/dell-charge-limit transaction-state", self.calls()
+        )
+        self.assertFalse(
+            [c for c in self.calls() if "installer.py" in c], "core not run while busy"
+        )
+        self.assertFalse(os.path.lexists(self.plugin))
+
     def test_help_lists_the_options(self):
         result = self.install("--help")
         self.assertEqual(result.returncode, 0)

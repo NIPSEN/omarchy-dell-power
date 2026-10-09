@@ -13,7 +13,7 @@ ShellRoot {
   property var failed: []
   QtObject {
     id: shellApi
-    property var barConfig: ({layout: {right: [{id: "local.dell-power-extension"}]}})
+    property var barConfig: ({layout: {right: [{id: "io.github.nipsen.dell-power"}]}})
     function updateEntryInline(id, value) { barConfig = {layout: {right: [Object.assign({}, value, {id: id})]}}; return true }
   }
   Plugin.Service { id: service; shell: shellApi }

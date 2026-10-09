@@ -662,7 +662,7 @@ class Hardware:
 
 
 @contextlib.contextmanager
-def mutation_lock(path=Path("/run/dell-power-extension.lock"), timeout=5):
+def mutation_lock(path=Path("/run/dell-power.lock"), timeout=5):
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         info = os.fstat(fd)
@@ -691,7 +691,7 @@ class Controller:
     def __init__(
         self,
         hardware,
-        lock_path=Path("/run/dell-power-extension.lock"),
+        lock_path=Path("/run/dell-power.lock"),
         rollback_deadline=None,
     ):
         self.hw, self.lock_path = hardware, Path(lock_path)

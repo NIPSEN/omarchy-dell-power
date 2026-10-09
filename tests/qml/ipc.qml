@@ -8,12 +8,12 @@ ShellRoot {
   property var panels: []
   QtObject {
     id: shellApi
-    property var barConfig: ({layout: {right: [{id: "local.dell-power-extension", chargeLimitStep: 4}]}})
-    function serviceFor(id) { return id === "local.dell-power-extension" ? service : null }
+    property var barConfig: ({layout: {right: [{id: "io.github.nipsen.dell-power", chargeLimitStep: 4}]}})
+    function serviceFor(id) { return id === "io.github.nipsen.dell-power" ? service : null }
     function updateEntryInline(id, value) { barConfig = {layout: {right: [Object.assign({}, value, {id: id})]}}; return true }
   }
   Plugin.Service { id: service; shell: shellApi }
-  Ui.PluginBarApi { id: barApi; pluginId: "local.dell-power-extension"; moduleName: pluginId; shell: shellApi; foreground: "white"; background: "black"; fontFamily: "sans-serif"; barSize: 32 }
+  Ui.PluginBarApi { id: barApi; pluginId: "io.github.nipsen.dell-power"; moduleName: pluginId; shell: shellApi; foreground: "white"; background: "black"; fontFamily: "sans-serif"; barSize: 32 }
   Component { id: factory; Plugin.Panel {bar: barApi} }
   Component.onCompleted: { panels = [factory.createObject(fixture), factory.createObject(fixture)] }
   IpcHandler {

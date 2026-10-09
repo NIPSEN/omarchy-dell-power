@@ -14,7 +14,7 @@ ShellRoot {
   property var thresholdRequests: []
   QtObject {
     id: shellApi
-    property var barConfig: ({layout: {right: [{id: "local.dell-power-extension"}]}})
+    property var barConfig: ({layout: {right: [{id: "io.github.nipsen.dell-power"}]}})
     function serviceFor(id) { return service }
     function updateEntryInline(id, settings) {
       barConfig = {layout: {right: [Object.assign({}, settings, {id: id})]}}
@@ -23,7 +23,7 @@ ShellRoot {
   }
   Ui.PluginBarApi {
     id: barApi
-    pluginId: "local.dell-power-extension"
+    pluginId: "io.github.nipsen.dell-power"
     moduleName: pluginId
     shell: shellApi
     foreground: "#e0e2ea"

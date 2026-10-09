@@ -8,11 +8,11 @@ for (const k of ["automation", "saver", "brightness", "telemetry", "powerFlow"])
 assert.equal(defaults.chargingEnabled, true);
 assert.equal(defaults.batteryDetailsVisible, false);
 const one = {
-  id: "local.dell-power-extension",
+  id: "io.github.nipsen.dell-power",
   showPercentage: true,
   chargingVisible: false,
 };
-const two = { id: "local.dell-power-extension", showPercentage: false };
+const two = { id: "io.github.nipsen.dell-power", showPercentage: false };
 assert.equal(M.canonical({ layout: { left: [one], right: [two] } }, one.id).showPercentage, true);
 assert.equal(M.canonical({ layout: {} }, one.id).chargeLimitStep, 5);
 const status = {

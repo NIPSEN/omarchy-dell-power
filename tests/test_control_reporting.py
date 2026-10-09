@@ -21,7 +21,7 @@ class ControlReportingTests(unittest.TestCase):
         module.Controller = mock.Mock()
         module.Controller.return_value.execute.side_effect = module.Refused('Fixture unavailable transaction outcome')
         output = io.StringIO()
-        control = Path(__file__).resolve().parents[1] / 'system/control'
+        control = Path(__file__).resolve().parents[1] / 'system/dell-charge-limit'
         with mock.patch.dict(sys.modules, {'backend': module}), mock.patch.dict(os.environ), \
                 mock.patch.object(sys, 'argv', ['control', 'status']), \
                 mock.patch.object(sys, 'path', list(sys.path)), \

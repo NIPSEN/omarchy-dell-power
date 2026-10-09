@@ -151,7 +151,7 @@ def main(args):
     if os.geteuid() == 0:
         raise ValueError("Snapshot bridge must run as the desktop user")
     base = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state"))
-    directory = base / "dell-power-extension"
+    directory = base / "dell-power"
     path = directory / "snapshots.json"
     if args == ["load"]:
         return {

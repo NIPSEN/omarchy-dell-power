@@ -1,9 +1,0 @@
-[Unit]
-Description=Prime the io.github.nipsen.dell-power state cache
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/dell-charge-limit status
-
-[Install]
-WantedBy=multi-user.target

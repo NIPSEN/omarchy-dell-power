@@ -88,7 +88,7 @@ def prepare(directory, fixture="shell.qml"):
     controller = plugin / 'Controller.qml'
     text = controller.read_text()
     substitutions = {
-        '/usr/lib/dell-power-extension/control': str(command),
+        '/usr/local/bin/dell-charge-limit': str(command),
         '/usr/bin/sudo': str(command), '/usr/bin/pkexec': str(command),
         '/usr/bin/dbus-monitor': str(root / 'mock-monitor'),
         '/usr/share/omarchy/bin/omarchy-battery-status': str(root / 'mock-battery'),
@@ -106,7 +106,7 @@ def prepare(directory, fixture="shell.qml"):
     if fixture == 'ipc-stale.qml':
         config = root / 'home/.config/omarchy/shell.json'
         config.parent.mkdir(parents=True)
-        config.write_text(json.dumps({'version': 1, 'bar': {'layout': {'right': [{'id': 'local.dell-power-extension', 'chargeLimitStep': 4}]}}}))
+        config.write_text(json.dumps({'version': 1, 'bar': {'layout': {'right': [{'id': 'io.github.nipsen.dell-power', 'chargeLimitStep': 4}]}}}))
     env = {key: value for key, value in os.environ.items()
            if key not in {'DISPLAY', 'WAYLAND_DISPLAY', 'HYPRLAND_INSTANCE_SIGNATURE', 'DBUS_SESSION_BUS_ADDRESS', 'OMARCHY_PATH', 'QS_CONFIG_PATH', 'QS_CONFIG_NAME', 'QS_MANIFEST'}}
     env.update(QT_QPA_PLATFORM='offscreen', QT_QPA_PLATFORMTHEME='none', QT_QUICK_CONTROLS_STYLE='Basic', QSG_RHI_BACKEND='software',
@@ -145,7 +145,7 @@ def run_fixture(fixture):
             print('Fixture operations:', [(x['operation'], x['args']) for x in commands])
             print('Forbidden fixture operations:', forbidden)
             raise SystemExit('Offscreen behavioral checks failed')
-        snapshot = root / 'state/dell-power-extension/snapshots.json'
+        snapshot = root / 'state/dell-power/snapshots.json'
         saved = json.loads(snapshot.read_text())
         if fixture == 'shell.qml':
             assert evidence['serviceGapDetachCount'] == 2, 'service lookup gap must detach each living panel once'
@@ -213,7 +213,7 @@ def run_ipc_fixture(fixture="ipc.qml"):
             process = subprocess.Popen(['qs', '--no-color', '-p', str(root)], env=env, stdout=log, stderr=subprocess.STDOUT)
             calls = []
             last_ready_error = ''
-            def call(method, *arguments, target='local.dell-power-extension'):
+            def call(method, *arguments, target='io.github.nipsen.dell-power'):
                 result = subprocess.run(['qs', 'ipc', '--pid', str(process.pid), 'call', target, method, *arguments],
                                         env=env, capture_output=True, text=True, timeout=4)
                 if result.returncode: raise AssertionError(result.stdout + result.stderr)

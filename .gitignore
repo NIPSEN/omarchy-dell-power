@@ -1,6 +1,3 @@
 .git
 screenshot.png.bak
 __pycache__/
-pkg/
-src/
-*.pkg.tar.*

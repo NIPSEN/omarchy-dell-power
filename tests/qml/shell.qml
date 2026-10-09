@@ -22,8 +22,8 @@ ShellRoot {
   QtObject {
     id: shellApi
     property var currentService: null
-    property var barConfig: ({layout: {left: [], center: [], right: [{id: "local.dell-power-extension"}]}})
-    function serviceFor(id) { return id === "local.dell-power-extension" ? currentService : null }
+    property var barConfig: ({layout: {left: [], center: [], right: [{id: "io.github.nipsen.dell-power"}]}})
+    function serviceFor(id) { return id === "io.github.nipsen.dell-power" ? currentService : null }
     function updateEntryInline(id, settings) {
       barConfig = {layout: {left: [], center: [], right: [Object.assign({}, settings, {id: id})]}}
       return true
@@ -31,7 +31,7 @@ ShellRoot {
   }
   Ui.PluginBarApi {
     id: barApi
-    pluginId: "local.dell-power-extension"
+    pluginId: "io.github.nipsen.dell-power"
     moduleName: pluginId
     shell: shellApi
     foreground: "#ffffff"
@@ -127,6 +127,7 @@ ShellRoot {
         var changed = Object.assign({}, c.status, {protocolVersion: 99})
         c.updateStatus(JSON.stringify(changed))
         fixture.check(!c.helperCompatible && !fixture.panels[0].dellWmiReady, "helper mismatch disables affected controls")
+        fixture.check(c.helperOutdated && fixture.panels[0].helperMissing, "an earlier helper asks for install-system.sh again")
         fixture.check(c.profiles.length > 0 && fixture.panels[0].batteryPresent, "helper mismatch retains ordinary battery and PPD")
         changed = Object.assign({}, changed, {protocolVersion: 1, wmi: {mode: "Standard", usbPowerShare: "Enabled", typeCPower: "15W"}})
         c.updateStatus(JSON.stringify(changed))
@@ -137,7 +138,7 @@ ShellRoot {
         fixture.check(fixture.panels[0].chargeThresholdActive, "verified Custom mode identifies active limit")
         c.setSetting("showPercentage", true)
         fixture.check(fixture.panels[0].showPercentage && fixture.panels[1].showPercentage, "canonical percentage setting updates all panels")
-        shellApi.updateEntryInline("local.dell-power-extension", Object.assign({}, c.settings, {showPercentage: false, chargeLimitStep: 7}))
+        shellApi.updateEntryInline("io.github.nipsen.dell-power", Object.assign({}, c.settings, {showPercentage: false, chargeLimitStep: 7}))
         fixture.check(!fixture.panels[0].showPercentage && !fixture.panels[1].showPercentage && fixture.panels[0].chargeLimitStep === 7, "external inline configuration updates all panels")
         c.protectionSnapshot = {before: {mode: "Standard", start: 50, end: 80}, applied: {mode: "Custom", start: 50, end: 80}}
         c.persist()

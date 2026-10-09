@@ -1,4 +1,4 @@
-.PHONY: test qml package validate
+.PHONY: test qml validate sums
 test:
 	node Model.test.js
 	node PolicyModel.test.js
@@ -7,8 +7,8 @@ test:
 	python -m unittest discover -s tests -v
 qml:
 	python tests/check_qml.py
-package:
-	makepkg --cleanbuild --force --noconfirm
 validate:
 	omarchy plugin validate .
 	git diff --check
+sums:
+	sha256sum system/installer.py system/dell-charge-limit system/backend.py system/*.policy > SHA256SUMS

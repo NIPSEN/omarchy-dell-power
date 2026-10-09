@@ -9,8 +9,8 @@ import "PresentationModel.js" as Presentation
 
 Panel {
   id: root
-  moduleName: "local.dell-power-extension"
-  ipcTarget: "local.dell-power-extension"
+  moduleName: "io.github.nipsen.dell-power"
+  ipcTarget: "io.github.nipsen.dell-power"
   manageIpc: false
   readonly property var service: root.bar && root.bar.shell && typeof root.bar.shell.serviceFor === "function"
     ? root.bar.shell.serviceFor(root.moduleName) : null
@@ -31,7 +31,7 @@ Panel {
   property bool setupCopied: false
   readonly property var powerChain: powerController && featureShown("powerFlow") ? powerController.powerChain : null
   readonly property var basicBattery: powerController && powerController.status && powerController.status.battery ? powerController.status.battery : ({})
-  readonly property string setupCommand: "cd ~/Documents/Projects/omarchy-dell-power && ./install.sh"
+  readonly property string setupCommand: "~/.config/omarchy/plugins/io.github.nipsen.dell-power/install-system.sh"
   readonly property var procEnv: ({ "PATH": "/usr/bin:/bin" })
   readonly property int chargeLimitStep: {
     var v = powerController ? powerController.settings.chargeLimitStep : setting("chargeLimitStep", 5)
@@ -981,7 +981,9 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: powerController && !powerController.helperCompatible ? "The Dell helper is missing or needs an update. Run the local installer:" : "Install the Dell helper to enable charging, USB and firmware controls:"
+            text: powerController && powerController.helperOutdated
+              ? "The system helper needs an update for this version — run this once in a terminal:"
+              : "Charge modes, thresholds, USB options and power flow need the system helper — run this once in a terminal:"
             color: Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption

@@ -9,8 +9,8 @@ import "PolicyModel.js" as Policy
 Item {
   id: root
   property var shell: null
-  readonly property string pluginId: "local.dell-power-extension"
-  readonly property string helperPath: "/usr/lib/dell-power-extension/control"
+  readonly property string pluginId: "io.github.nipsen.dell-power"
+  readonly property string helperPath: "/usr/local/bin/dell-charge-limit"
   readonly property string bridgePath: Qt.resolvedUrl("state.py").toString().replace(/^file:\/\//, "")
   readonly property var procEnv: ({PATH: "/usr/share/omarchy/bin:/usr/bin:/bin", LANG: "C", LC_ALL: "C",
     HOME: Quickshell.env("HOME"), XDG_STATE_HOME: Quickshell.env("XDG_STATE_HOME"),
@@ -30,6 +30,8 @@ Item {
   property bool busy: false
   property bool probed: false
   property bool helperCompatible: false
+  // An earlier helper answered: the plugin was updated, install-system.sh not yet rerun.
+  property bool helperOutdated: false
   property string error: ""
   property string policyReason: "Policies are disabled."
   property var protectionSnapshot: null
@@ -165,13 +167,13 @@ Item {
   }
   function updateStatus(raw) {
     var obj = json(raw)
-    if (!obj || obj.ok !== true) { probed = true; return }
+    if (!obj || obj.ok !== true) { probed = true; helperOutdated = false; return }
     if (obj.protocolVersion !== 1) {
-      helperCompatible = false; status = null; dellStatus = null
+      helperCompatible = false; helperOutdated = true; status = null; dellStatus = null
       error = "Update the Dell Power helper: incompatible protocol"
       return
     }
-    helperCompatible = true; probed = true; status = obj
+    helperCompatible = true; helperOutdated = false; probed = true; status = obj
     dellStatus = Model.parseDellStatus(JSON.stringify(obj))
     if (obj.ppd && obj.ppd.available) setProfiles(obj.ppd.choices, obj.ppd.profile)
     if (protectionSnapshot && !(busy && currentAction && currentAction.meta.protection)

@@ -34,16 +34,19 @@ PYTHON=/usr/bin/python3
 SHA256SUM=/usr/bin/sha256sum
 SUDO=/usr/bin/sudo
 
-fail() { echo "install-system.sh: $*" >&2; exit 1; }
+fail() {
+  echo "install-system.sh: $*" >&2
+  exit 1
+}
 
 [[ $EUID != 0 ]] || fail "run it as your regular user — only the authenticated core is elevated via sudo"
-[[ -x $CURL && -x $GIT && -x $PYTHON && -x $SHA256SUM && -x $SUDO ]] \
-  || fail "missing required tools (curl, git, python3, coreutils, sudo)"
+[[ -x $CURL && -x $GIT && -x $PYTHON && -x $SHA256SUM && -x $SUDO ]] ||
+  fail "missing required tools (curl, git, python3, coreutils, sudo)"
 
 HERE=$(cd -- "$("$DIRNAME" -- "${BASH_SOURCE[0]}")" && pwd)
 
-commit=$("$GIT" -C "$HERE" rev-parse HEAD 2>/dev/null) \
-  || fail "not a git checkout — install with: omarchy plugin add https://github.com/NIPSEN/omarchy-dell-power.git --enable"
+commit=$("$GIT" -C "$HERE" rev-parse HEAD 2>/dev/null) ||
+  fail "not a git checkout — install with: omarchy plugin add https://github.com/NIPSEN/omarchy-dell-power.git --enable"
 [[ $commit =~ ^[0-9a-f]{40}$ ]] || fail "unexpected git HEAD output"
 
 base="https://raw.githubusercontent.com/NIPSEN/omarchy-dell-power/$commit"
@@ -53,12 +56,12 @@ fetch() { "$CURL" -fsS --proto '=https' --proto-redir '=https' --max-time 20 --m
 
 # Command substitution strips trailing newlines; the '.' sentinel preserves
 # the exact published bytes so the digest covers the same content we execute.
-manifest=$(fetch SHA256SUMS 65536 && echo .) \
-  || fail "could not fetch the publisher manifest — check the network, and 'git status' for unpushed commits"
+manifest=$(fetch SHA256SUMS 65536 && echo .) ||
+  fail "could not fetch the publisher manifest — check the network, and 'git status' for unpushed commits"
 manifest=${manifest%.}
 [[ ${#manifest} -le 65536 ]] || fail "publisher manifest exceeds 64 KiB"
-[[ $manifest =~ ([0-9a-f]{64})[[:space:]]+system/installer\.py ]] \
-  || fail "publisher manifest has no entry for system/installer.py"
+[[ $manifest =~ ([0-9a-f]{64})[[:space:]]+system/installer\.py ]] ||
+  fail "publisher manifest has no entry for system/installer.py"
 expected=${BASH_REMATCH[1]}
 
 program=$(fetch system/installer.py 1048576 && echo .) || fail "could not fetch the installer core"

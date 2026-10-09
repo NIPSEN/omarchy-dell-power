@@ -75,7 +75,7 @@ wmi_read() {
 }
 
 wmi_write() {
-  printf '%s' "$2" > "$WMI/$1/current_value" 2>/dev/null
+  printf '%s' "$2" >"$WMI/$1/current_value" 2>/dev/null
 }
 
 # Where the charge thresholds live: the battery's EC attributes (dell_laptop),
@@ -92,9 +92,10 @@ threshold_backend() {
 
 read_threshold() {
   case $(threshold_backend) in
-    ec) cat "$BAT/charge_control_$1_threshold" 2>/dev/null || true ;;
-    sysman)
-      if [[ $1 == start ]]; then wmi_read CustomChargeStart; else wmi_read CustomChargeStop; fi ;;
+  ec) cat "$BAT/charge_control_$1_threshold" 2>/dev/null || true ;;
+  sysman)
+    if [[ $1 == start ]]; then wmi_read CustomChargeStart; else wmi_read CustomChargeStop; fi
+    ;;
   esac
 }
 
@@ -105,10 +106,11 @@ threshold_value() {
 
 write_threshold() {
   case $(threshold_backend) in
-    ec) printf '%d' "$2" > "$BAT/charge_control_$1_threshold" 2>/dev/null ;;
-    sysman)
-      if [[ $1 == start ]]; then wmi_write CustomChargeStart "$2"; else wmi_write CustomChargeStop "$2"; fi ;;
-    *) return 1 ;;
+  ec) printf '%d' "$2" >"$BAT/charge_control_$1_threshold" 2>/dev/null ;;
+  sysman)
+    if [[ $1 == start ]]; then wmi_write CustomChargeStart "$2"; else wmi_write CustomChargeStop "$2"; fi
+    ;;
+  *) return 1 ;;
   esac
 }
 
@@ -161,9 +163,9 @@ profile_class_dir() {
   for d in /sys/class/platform-profile/platform-profile-*; do
     [[ -f $d/profile && -f $d/choices ]] || continue
     found=$d
-    n=$(( n + 1 ))
+    n=$((n + 1))
   done
-  (( n == 1 )) && printf '%s' "$found"
+  ((n == 1)) && printf '%s' "$found"
   return 0
 }
 
@@ -235,9 +237,9 @@ read_sensors_json() {
 
 write_cache() { # $1 = json WMI, $2 = json thresholds
   local tmp=$STATE.tmp
-  if mkdir -p "$STATE_DIR" && \
-     jq -n --argjson w "$1" --argjson t "$2" --arg ts "$(date +%s)" \
-       '{thresholds:$t, wmi:$w, updatedAt:$ts}' > "$tmp" 2>/dev/null; then
+  if mkdir -p "$STATE_DIR" &&
+    jq -n --argjson w "$1" --argjson t "$2" --arg ts "$(date +%s)" \
+      '{thresholds:$t, wmi:$w, updatedAt:$ts}' >"$tmp" 2>/dev/null; then
     mv "$tmp" "$STATE"
   fi
 }
@@ -253,10 +255,10 @@ status_json() {
     # At boot, the dell-wmi-sysman interface appears progressively:
     # retry briefly until the charge mode is readable.
     local attempt=0
-    while (( attempt < 10 )) && $dell && [[ -z $(printf '%s' "$wmi" | jq -r '.mode // empty') ]]; do
+    while ((attempt < 10)) && $dell && [[ -z $(printf '%s' "$wmi" | jq -r '.mode // empty') ]]; do
       sleep 1
       wmi=$(read_wmi_json)
-      attempt=$(( attempt + 1 ))
+      attempt=$((attempt + 1))
     done
     ec=$(read_ec_json)
     write_cache "$wmi" "$ec" 2>/dev/null || true
@@ -292,7 +294,7 @@ cmd_set() {
   local which=$1
   local value=${2:-}
   [[ $value =~ ^[0-9]{1,3}$ ]] || fail "invalid value: $value"
-  value=$(( 10#$value ))
+  value=$((10#$value))
   [[ -n $(threshold_backend) ]] || fail "this laptop exposes no charge thresholds"
 
   local start end
@@ -302,17 +304,17 @@ cmd_set() {
 
   local nstart nend
   if [[ $which == start ]]; then
-    (( value >= START_MIN && value <= START_MAX )) || fail "start out of range ($START_MIN-$START_MAX)"
+    ((value >= START_MIN && value <= START_MAX)) || fail "start out of range ($START_MIN-$START_MAX)"
     nstart=$value
     nend=$end
-    if (( nend < nstart + GAP )); then nend=$(( nstart + GAP )); fi
-    (( nend <= END_MAX )) || fail "impossible: end would exceed $END_MAX"
+    if ((nend < nstart + GAP)); then nend=$((nstart + GAP)); fi
+    ((nend <= END_MAX)) || fail "impossible: end would exceed $END_MAX"
   else
-    (( value >= END_MIN && value <= END_MAX )) || fail "end out of range ($END_MIN-$END_MAX)"
+    ((value >= END_MIN && value <= END_MAX)) || fail "end out of range ($END_MIN-$END_MAX)"
     nend=$value
     nstart=$start
-    if (( nstart > nend - GAP )); then nstart=$(( nend - GAP )); fi
-    (( nstart >= START_MIN )) || fail "impossible: start would go below $START_MIN"
+    if ((nstart > nend - GAP)); then nstart=$((nend - GAP)); fi
+    ((nstart >= START_MIN)) || fail "impossible: start would go below $START_MIN"
   fi
 
   # Les seuils ne s'appliquent qu'en mode Custom.
@@ -325,7 +327,7 @@ cmd_set() {
   # the order that keeps stop >= start + gap at every step. A value that does
   # not change is not written again: on dell-wmi-sysman each write is a BIOS
   # setting.
-  if (( nend > end )); then
+  if ((nend > end)); then
     [[ $nend == "$end" ]] || write_threshold end "$nend" || fail "end write refused"
     [[ $nstart == "$start" ]] || write_threshold start "$nstart" || fail "start write refused"
   else
@@ -390,7 +392,7 @@ cmd_profile() {
   for v in $choices; do [[ $v == "$want" ]] && ok=1; done
   [[ -n $ok ]] || fail "this laptop does not offer the $want profile"
 
-  printf '%s' "$want" > "$target" 2>/dev/null || fail "profile write refused"
+  printf '%s' "$want" >"$target" 2>/dev/null || fail "profile write refused"
   [[ $(head -c 64 "$target" 2>/dev/null | tr -cd 'a-z-') == "$want" ]] || fail "the firmware did not switch to $want"
   status_json
 }
@@ -402,18 +404,18 @@ cmd_fan_boost() {
   local group=${1:-} value=${2:-} aw n label written=0
   [[ $group == cpu || $group == gpu ]] || fail "fan group must be cpu or gpu"
   [[ $value =~ ^[0-9]{1,3}$ ]] || fail "boost must be a number from 0 to $BOOST_MAX"
-  value=$(( 10#$value ))
-  (( value <= BOOST_MAX )) || fail "boost must be a number from 0 to $BOOST_MAX"
+  value=$((10#$value))
+  ((value <= BOOST_MAX)) || fail "boost must be a number from 0 to $BOOST_MAX"
   aw=$(hwmon_dir alienware_wmi) || fail "this laptop has no Alienware fan control"
 
   for n in 1 2 3 4 5 6 7 8; do
     [[ -f $aw/fan${n}_boost ]] || continue
     label=$(head -c 32 "$aw/fan${n}_label" 2>/dev/null | tr -cd '[:alnum:] ')
     [[ ${label,,} == "$group fan"* ]] || continue
-    printf '%d' "$value" > "$aw/fan${n}_boost" 2>/dev/null || fail "boost write refused for fan $n"
-    written=$(( written + 1 ))
+    printf '%d' "$value" >"$aw/fan${n}_boost" 2>/dev/null || fail "boost write refused for fan $n"
+    written=$((written + 1))
   done
-  (( written > 0 )) || fail "no $group fans on this laptop"
+  ((written > 0)) || fail "no $group fans on this laptop"
   status_json
 }
 
@@ -504,7 +506,10 @@ cmd_power_chain() {
   ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null) || ac=0
   for f in $UCSI; do
     [[ -d $f ]] || continue
-    if [[ $(cat "$f/online" 2>/dev/null) == 1 ]]; then uc=1; break; fi
+    if [[ $(cat "$f/online" 2>/dev/null) == 1 ]]; then
+      uc=1
+      break
+    fi
   done
 
   # USB-C port: power delivered to a connected device (phone, etc.).
@@ -525,15 +530,18 @@ cmd_power_chain() {
   if [[ $uc == 1 ]]; then
     for f in $UCSI; do
       [[ -f $f/usb_type ]] || continue
-      usbType=$(tr -d '[]' < "$f/usb_type" | awk '{print $1}')
+      usbType=$(tr -d '[]' <"$f/usb_type" | awk '{print $1}')
       break
     done
   fi
 
   local source
-  if [[ $ac == 1 ]]; then source="mains"
-  elif [[ $uc == 1 ]]; then source="typec"
-  else source="battery"
+  if [[ $ac == 1 ]]; then
+    source="mains"
+  elif [[ $uc == 1 ]]; then
+    source="typec"
+  else
+    source="battery"
   fi
 
   # The EC may report positive current even while discharging. Trust the
@@ -593,12 +601,12 @@ cmd_power_chain() {
 
 cmd=${1:-}
 case "$cmd" in
-  status) cmd_status ;;
-  power-chain) cmd_power_chain ;;
-  set-start) cmd_set start "${2:-}" ;;
-  set-end) cmd_set end "${2:-}" ;;
-  wmi) cmd_wmi "${@:2}" ;;
-  profile) cmd_profile "${2:-}" ;;
-  fan-boost) cmd_fan_boost "${2:-}" "${3:-}" ;;
-  *) fail "unknown command: ${cmd:-}" ;;
+status) cmd_status ;;
+power-chain) cmd_power_chain ;;
+set-start) cmd_set start "${2:-}" ;;
+set-end) cmd_set end "${2:-}" ;;
+wmi) cmd_wmi "${@:2}" ;;
+profile) cmd_profile "${2:-}" ;;
+fan-boost) cmd_fan_boost "${2:-}" "${3:-}" ;;
+*) fail "unknown command: ${cmd:-}" ;;
 esac

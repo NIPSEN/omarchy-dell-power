@@ -24,7 +24,7 @@ def prepare(directory, fixture="shell.qml"):
     root = Path(directory)
     plugin = root / 'plugin'
     plugin.mkdir()
-    for name in ('Panel.qml', 'FeaturesPage.qml', 'PresentationModel.js', 'Service.qml',
+    for name in ('Panel.qml', 'FeaturesPage.qml', 'Section.qml', 'PresentationModel.js', 'Service.qml',
                  'Controller.qml', 'Model.js', 'ControllerModel.js', 'PolicyModel.js', 'state.py'):
         shutil.copy2(ROOT / name, plugin / name)
     imports = root / 'imports'
@@ -59,10 +59,21 @@ def prepare(directory, fixture="shell.qml"):
     }
     fixture_status['controllers'][0]['choices'] = fixture_status['thermal']['choices']
     fixture_status['controllers'].append({'name': 'SoC Power Slider', 'profile': 'balanced', 'choices': ['low-power', 'balanced', 'performance']})
+    if fixture == 'ui.qml':
+        fixture_status['vendor'] = 'Dell Inc.'
+        fixture_status['thermal'] = {'driver': 'dell-pc', 'profile': 'balanced', 'choices': ['cool', 'quiet', 'balanced', 'performance']}
+        fixture_status['wmi'] = {'mode': 'Adaptive', 'usbPowerShare': None, 'typeCPower': None}
+        fixture_status['chargeModes'] = ['Standard', 'Express', 'Adaptive', 'PrimAcUse', 'Custom']
+        fixture_status['capabilities']['usb'] = False
+        fixture_status['capabilities']['fanBoost'] = False
+        fixture_status['sensors']['fans'] = []
+        fixture_status['battery'].update(energyFullWh=68.6, energyDesignWh=68.6)
+        # The real helper sorts profiles; omarchy-powerprofiles-list does not.
+        fixture_status['ppd']['choices'] = ['balanced', 'performance', 'power-saver']
     fixture_status['brightness'] = 500
     fixture_status['brightnessMax'] = 1000
     (root / 'status.json').write_text(json.dumps(fixture_status))
-    (root / 'flags.json').write_text(json.dumps({'actions': fixture == 'actions.qml', 'isolated-ownership': fixture.startswith('ipc')}))
+    (root / 'flags.json').write_text(json.dumps({'actions': fixture in ('actions.qml', 'ui.qml'), 'isolated-ownership': fixture.startswith('ipc')}))
     if fixture == 'actions.qml' or fixture.startswith('ipc'):
         (plugin / 'state.py').rename(plugin / 'real_state.py')
         shutil.copy2(ROOT / 'tests/qml/bridge.py', plugin / 'state.py')
@@ -164,6 +175,33 @@ def run_fixture(fixture):
         assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
         assert stat.S_IMODE(snapshot.parent.stat().st_mode) == 0o700
         print(f"Offscreen QML {fixture} checks passed: {len(evidence['passed'])} assertions; {len(commands)} fixture operations; private snapshot checks verified.")
+        for label in evidence['passed']: print('  PASS ' + label)
+
+
+def run_ui_fixture():
+    with tempfile.TemporaryDirectory(prefix='dell-qml-ui-') as directory:
+        root, env = prepare(directory, 'ui.qml')
+        result = subprocess.run(['qs', '--no-color', '-p', str(root)], env=env,
+                                capture_output=True, text=True, timeout=40)
+        output = result.stdout + result.stderr
+        matches = re.findall(r'FIXTURE_RESULT (\{[^\n]*\})', output)
+        errors = [line for line in output.splitlines() if re.search(
+            r'(TypeError|ReferenceError|ASSERTION FAILED|Cannot assign|Unable to assign|Binding loop)', line)]
+        if result.returncode or not matches or errors:
+            print(output[:16000])
+            raise SystemExit('Rendered UI interaction checks failed')
+        evidence = json.loads(matches[-1])
+        if evidence['failed']:
+            print(output[:16000])
+            raise SystemExit('Rendered UI assertions failed')
+        commands = [json.loads(line) for line in (root / 'commands.jsonl').read_text().splitlines()]
+        assert all(c['operation'] in {'status', 'status-live', 'battery-info', 'profile-list', 'sensors', 'power-chain',
+                                      'charge-thresholds', 'charge-protect', 'profile'} for c in commands)
+        destination = Path('/tmp/dell-power-ui-review')
+        destination.mkdir(exist_ok=True)
+        for name in ('main.png', 'main-expanded.png', 'main-optional.png', 'settings.png', 'settings-policies.png', 'settings-advanced.png'):
+            shutil.copy2(root / name, destination / name)
+        print('Rendered UI checks passed: ' + str(len(evidence['passed'])) + ' assertions; previews: ' + str(destination))
         for label in evidence['passed']: print('  PASS ' + label)
 
 
@@ -291,6 +329,7 @@ def run_ipc_fixture(fixture="ipc.qml"):
 def main():
     run_fixture('shell.qml')
     run_fixture('actions.qml')
+    run_ui_fixture()
     run_ipc_fixture()
     run_ipc_fixture('ipc-stale.qml')
 

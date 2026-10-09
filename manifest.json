@@ -5,10 +5,7 @@
   "version": "2.0.0",
   "author": "NIPSEN",
   "description": "Configurable Dell and Alienware power and battery controls with optional telemetry and policies",
-  "kinds": [
-    "bar-widget",
-    "service"
-  ],
+  "kinds": ["bar-widget", "service"],
   "entryPoints": {
     "barWidget": "Panel.qml",
     "service": "Service.qml"

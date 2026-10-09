@@ -613,6 +613,23 @@ class ProfileTests(FixtureCase):
         self.assertEqual(self.hw.read(self.root / self.dell / "profile"), "cool")
         self.assertNotIn(("write", self.dell + "/profile", "quiet"), self.writes())
 
+    def test_soc_layer_outside_shared_profiles_is_not_awaited(self):
+        # dell-pc lacks low-power, so the aggregate cannot carry PPD power-saver to the SoC slider.
+        put(self.root, self.intel + "/name", "SoC Power Slider")
+        put(self.root, self.intel + "/choices", "low-power balanced performance")
+        put(self.root, self.dell + "/choices", "cool quiet balanced performance")
+        put(self.root, "sys/firmware/acpi/platform_profile_choices", "balanced performance")
+        self.hw.ppd_propagates = False
+        result = self.controller.execute(["profile", "quiet", "power-saver"])
+        self.success(result)
+        self.assertEqual(self.hw.ppd_profile, "power-saver")
+        self.assertEqual(self.hw.read(self.root / self.intel / "profile"), "performance")
+        self.assertEqual(result["actual"]["thermal"]["profile"], "quiet")
+        # A shared mode is still awaited on the same machine.
+        put(self.root, self.intel + "/profile", "balanced")
+        result = self.controller.execute(["profile", "performance", "performance"])
+        self.failure(result, True, True)
+
     def test_soc_readback_converges_before_dell_mutation(self):
         put(self.root, self.intel + "/name", "SoC Power Slider")
         self.hw.ppd_propagates = False

@@ -10,6 +10,9 @@ Item {
   property int contentWidth: 380
   property int contentHeight: 400
   default property alias contentItem: contentHolder.children
+  visible: open
+  y: 40
+  onOpenChanged: if (open && focusTarget) focusTarget.forceActiveFocus()
   width: contentWidth
   height: contentHeight
   function fittedContentWidth(value) { return Math.min(800, value) }

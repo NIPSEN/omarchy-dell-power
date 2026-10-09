@@ -155,6 +155,14 @@ Item {
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
   }
+  // Two sources report profiles in different orders (the helper sorts them,
+  // the Omarchy list does not). Keep one canonical order and reassign only on
+  // change so the picker neither reorders nor rebuilds on every poll.
+  function setProfiles(list, active) {
+    var ordered = Logic.orderProfiles(list)
+    if (!Logic.sameList(ordered, profiles)) profiles = ordered
+    if (active !== activeProfile) activeProfile = active
+  }
   function updateStatus(raw) {
     var obj = json(raw)
     if (!obj || obj.ok !== true) { probed = true; return }
@@ -165,7 +173,7 @@ Item {
     }
     helperCompatible = true; probed = true; status = obj
     dellStatus = Model.parseDellStatus(JSON.stringify(obj))
-    if (obj.ppd && obj.ppd.available) { profiles = obj.ppd.choices; activeProfile = obj.ppd.profile }
+    if (obj.ppd && obj.ppd.available) setProfiles(obj.ppd.choices, obj.ppd.profile)
     if (protectionSnapshot && !(busy && currentAction && currentAction.meta.protection)
         && obj.wmi.mode !== null && obj.thresholds.start !== null && obj.thresholds.end !== null && !Logic.sameCharge(obj, protectionSnapshot.applied)) {
       protectionSnapshot = null
@@ -325,7 +333,8 @@ Item {
     }
   }
   function setThermalProfile(dell) {
-    var sync = settings.syncPpd === true
+    // A missing system-profile service must not block available firmware modes.
+    var sync = settings.syncPpd === true && !!(status && status.capabilities.systemProfiles)
     if (sync && (!can("thermal") || !can("systemProfiles"))) { error = "Synchronization requires enabled Dell and system profile controls"; return }
     enqueue(["profile", dell, sync ? Logic.mappedProfile(dell) : "none"], "thermal", {sync: sync, manualProfile: true})
   }
@@ -571,7 +580,7 @@ Item {
   Process {
     id: profilesProc; clearEnvironment: true; environment: root.procEnv
     command: ["/usr/bin/timeout", "-k", "2", "15", "/usr/share/omarchy/bin/omarchy-powerprofiles-list", "--active-state"]
-    stdout: CappedCollector { proc: profilesProc; onFinished: function(t) { var v = Model.parseProfiles(t, 0); if (v.profiles.length) { root.profiles = v.profiles; root.activeProfile = v.activeProfile } } }
+    stdout: CappedCollector { proc: profilesProc; onFinished: function(t) { var v = Model.parseProfiles(t, 0); if (v.profiles.length) root.setProfiles(v.profiles, v.activeProfile) } }
   }
   Process {
     id: fallbackProfileProc; clearEnvironment: true; environment: root.procEnv

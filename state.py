@@ -3,13 +3,14 @@
 
 Not part of sudo/polkit authorization. Never reads or writes hardware.
 """
+
 import json
 import os
-from pathlib import Path
 import stat
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 
 
 def private_directory(path):
@@ -28,20 +29,28 @@ def read_private(path):
         return {}
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+        ):
             raise ValueError("Snapshot file permissions or owner are invalid")
         raw = stream.read(65537)
-        if len(raw) > 65536: raise ValueError("Snapshot exceeds size bound")
+        if len(raw) > 65536:
+            raise ValueError("Snapshot exceeds size bound")
         data = json.loads(raw)
-        if not isinstance(data, dict): raise ValueError("Snapshot must be an object")
+        if not isinstance(data, dict):
+            raise ValueError("Snapshot must be an object")
         return data
 
 
 def atomic_write(path, data):
     parent = private_directory(path.parent)
-    if path.is_symlink(): raise ValueError("Refusing symlink snapshot")
+    if path.is_symlink():
+        raise ValueError("Refusing symlink snapshot")
     raw = json.dumps(data, allow_nan=False)
-    if len(raw) > 65536: raise ValueError("Snapshot exceeds size bound")
+    if len(raw) > 65536:
+        raise ValueError("Snapshot exceeds size bound")
     fd, name = tempfile.mkstemp(prefix=".snapshot-", dir=parent)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -51,65 +60,122 @@ def atomic_write(path, data):
             os.fsync(stream.fileno())
         os.replace(name, path)
         directory = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-        try: os.fsync(directory)
-        finally: os.close(directory)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
-        if os.path.exists(name): os.unlink(name)
+        if os.path.exists(name):
+            os.unlink(name)
 
 
 def ownership(home):
     try:
         config = json.loads((home / ".config/omarchy/shell.json").read_text())
         version = config.get("version") if isinstance(config, dict) else None
-        if isinstance(version, bool) or not isinstance(version, (int, float)) or version != 1:
-            raise ValueError("Cannot establish ownership from invalid shell configuration")
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, (int, float))
+            or version != 1
+        ):
+            raise ValueError(
+                "Cannot establish ownership from invalid shell configuration"
+            )
         disabled = config.get("disabledPlugins", [])
-        if not isinstance(disabled, list) or not all(isinstance(item, str) for item in disabled):
+        if not isinstance(disabled, list) or not all(
+            isinstance(item, str) for item in disabled
+        ):
             raise ValueError("Disabled plugins must be a string list")
         # The stock service is implicitly loaded unless explicitly disabled.
-        stock = Path("/usr/share/omarchy/shell/plugins/services/battery/Service.qml").exists()
+        stock = Path(
+            "/usr/share/omarchy/shell/plugins/services/battery/Service.qml"
+        ).exists()
         conflicts = []
         if stock and "omarchy.battery" not in disabled:
-            conflicts.append("omarchy.battery restores source profiles (disabling it also removes its low-battery warning)")
-        units = ["dell-power-state.service", "dell-battery-utility.service",
-                 "dell-charge-limit.service", "omarchy-dell-power-profiles.service",
-                 "tlp.service", "auto-cpufreq.service", "tuned.service"]
+            conflicts.append(
+                "omarchy.battery restores source profiles (disabling it also removes its low-battery warning)"
+            )
+        units = [
+            "dell-power-state.service",
+            "dell-battery-utility.service",
+            "dell-charge-limit.service",
+            "omarchy-dell-power-profiles.service",
+            "tlp.service",
+            "auto-cpufreq.service",
+            "tuned.service",
+        ]
         for user in (False, True):
             args = ["/usr/bin/systemctl"] + (["--user"] if user else [])
-            result = subprocess.run(args + ["list-units", "--all", "--plain", "--no-legend", *units],
-                                    capture_output=True, text=True, timeout=5,
-                                    env={"PATH": "/usr/bin:/bin", "HOME": str(home),
-                                         "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
-                                         "LANG": "C"})
+            result = subprocess.run(
+                args + ["list-units", "--all", "--plain", "--no-legend", *units],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": str(home),
+                    "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}",
+                    "LANG": "C",
+                },
+            )
             if result.returncode:
-                return {"known": False, "conflict": bool(conflicts), "reason": "Cannot establish service ownership"}
-            if len(result.stdout) > 16384: raise ValueError("Service probe exceeded bounds")
+                return {
+                    "known": False,
+                    "conflict": bool(conflicts),
+                    "reason": "Cannot establish service ownership",
+                }
+            if len(result.stdout) > 16384:
+                raise ValueError("Service probe exceeded bounds")
             for line in result.stdout.splitlines():
                 fields = line.split()
-                if len(fields) >= 4 and fields[0] in units and fields[2] in {"active", "activating"}:
+                if (
+                    len(fields) >= 4
+                    and fields[0] in units
+                    and fields[2] in {"active", "activating"}
+                ):
                     conflicts.append(fields[0])
-        return {"known": True, "conflict": bool(conflicts), "reason": "; ".join(conflicts)}
+        return {
+            "known": True,
+            "conflict": bool(conflicts),
+            "reason": "; ".join(conflicts),
+        }
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return {"known": False, "conflict": False, "reason": "Cannot establish profile-restorer ownership"}
+        return {
+            "known": False,
+            "conflict": False,
+            "reason": "Cannot establish profile-restorer ownership",
+        }
 
 
 def main(args):
-    if os.geteuid() == 0: raise ValueError("Snapshot bridge must run as the desktop user")
+    if os.geteuid() == 0:
+        raise ValueError("Snapshot bridge must run as the desktop user")
     base = Path(os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local/state"))
     directory = base / "dell-power-extension"
     path = directory / "snapshots.json"
     if args == ["load"]:
-        return {"ok": True, "state": read_private(path), "ownership": ownership(Path.home())}
+        return {
+            "ok": True,
+            "state": read_private(path),
+            "ownership": ownership(Path.home()),
+        }
     if args == ["ownership"]:
         return {"ok": True, "ownership": ownership(Path.home())}
     if args == ["save"]:
         raw = sys.stdin.read(65537)
-        if len(raw) > 65536: raise ValueError("Snapshot exceeds size bound")
+        if len(raw) > 65536:
+            raise ValueError("Snapshot exceeds size bound")
         data = json.loads(raw)
-        if not isinstance(data, dict): raise ValueError("Snapshot must be an object")
+        if not isinstance(data, dict):
+            raise ValueError("Snapshot must be an object")
         atomic_write(path, data)
         return {"ok": True}
-    if len(args) == 3 and args[0] == "remember" and args[1] in {"ac", "battery"} and args[2] in {"power-saver", "balanced", "performance"}:
+    if (
+        len(args) == 3
+        and args[0] == "remember"
+        and args[1] in {"ac", "battery"}
+        and args[2] in {"power-saver", "balanced", "performance"}
+    ):
         # Called only after an ordinary manual system-profile transaction has
         # succeeded. Policies never enter this path. Match Omarchy's files.
         target = base / "omarchy/powerprofiles" / args[1]
@@ -120,10 +186,12 @@ def main(args):
                 stream.write(args[2] + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            if target.is_symlink(): raise ValueError("Refusing symlink preference")
+            if target.is_symlink():
+                raise ValueError("Refusing symlink preference")
             os.replace(name, target)
         finally:
-            if os.path.exists(name): os.unlink(name)
+            if os.path.exists(name):
+                os.unlink(name)
         return {"ok": True}
     raise ValueError("Unknown state operation")
 

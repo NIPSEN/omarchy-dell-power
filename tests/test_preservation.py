@@ -57,8 +57,10 @@ class BaselinePreservation(unittest.TestCase):
                             'mode === "Custom" ? 1 : 0.6', 'inactive (mode'):
             self.assertIn(interaction, self.panel)
         self.assertIn('chargingPaused', self.panel)
-        self.assertIn('Holding at Custom limit', self.panel)
-        self.assertIn('"Charging paused"', self.panel)
+        # The hero line stays upstream's; the battery state tells an active
+        # Custom limit apart from any other pause.
+        self.assertIn('return Model.modeLabel(device, root.discharging, upowerStates())', self.panel)
+        self.assertIn('root.chargeThresholdActive ? "Holding" : "Paused"', self.panel)
 
     def test_optional_sampling_does_not_own_alienware_fan_controls(self):
         self.assertIn('Model.groupBoost(root.controlFans, group)', self.panel)
@@ -73,10 +75,11 @@ class BaselinePreservation(unittest.TestCase):
         for interaction in ('USB PowerShare', 'Type-C 7.5 W', 'Type-C 15 W',
                             'setUsbPowerShare()', 'setDellTypeCPower("15W")',
                             'sourceNode', 'componentsNode', 'batteryNode', 'FlowArrow',
-                            'collapsible: true', 'label: "CPU"', 'label: "iGPU"',
+                            'collapsible: true', '"CPU package"', 'label: "iGPU"',
                             'label: "RAM"', 'label: "Other"', 'packV', 'packA'):
             self.assertIn(interaction, self.panel)
-        self.assertIn('POWER FLOW · ESTIMATES', self.panel)
+        self.assertIn('text: "POWER FLOW"', self.panel)
+        self.assertIn('hint: "Estimates"', self.panel)
         self.assertIn('Presentation.capacityText(root.basicBattery', self.panel)
         self.assertIn('Presentation.rateText(root.basicBattery.rateW)', self.panel)
 

@@ -48,7 +48,7 @@ elif operation == 'power-chain':
 elif operation == 'battery-info': print('percentage\t67%\nsize\t51 Wh\ncycles\t12\nrate\t15 W')
 elif operation == 'profile-list':
     print('\n'.join(p + '\t' + ('1' if p == status['ppd']['profile'] else '0') for p in status['ppd']['choices']))
-elif operation in {'charge-protect', 'charge-mode', 'charge-restore', 'profile', 'profile-owned', 'profile-owned-state', 'profile-restore-state', 'brightness-owned', 'brightness-restore'}:
+elif operation in {'charge-protect', 'charge-mode', 'charge-thresholds', 'charge-restore', 'profile', 'profile-owned', 'profile-owned-state', 'profile-restore-state', 'brightness-owned', 'brightness-restore'}:
     if not flags.get('actions'): fail('Forbidden fixture mutation: ' + operation)
     before = copy.deepcopy(status)
     if operation == 'charge-mode' and flags.get('fail-charge'): fail('Fixture firmware refused charging mode')
@@ -57,6 +57,11 @@ elif operation in {'charge-protect', 'charge-mode', 'charge-restore', 'profile',
         if not saved or not saved.get('protectionSnapshot'): fail('Protection snapshot was not durably saved')
         status['wmi']['mode'] = 'PrimAcUse'
     elif operation == 'charge-mode': status['wmi']['mode'] = args[1]
+    elif operation == 'charge-thresholds':
+        start, end = map(int, args[1:3])
+        if not (50 <= start <= 95 and 55 <= end <= 100 and end >= start + 5): fail('Invalid fixture thresholds')
+        status['wmi']['mode'] = 'Custom'
+        status['thresholds'] = {'start': start, 'end': end}
     elif operation == 'charge-restore':
         if [status['wmi']['mode'], str(status['thresholds']['start']), str(status['thresholds']['end'])] != args[4:7]: fail('Fixture charge Restore ownership changed')
         status['wmi']['mode'] = args[1]

@@ -74,8 +74,13 @@ def fail(msg):
 def run(argv, timeout=30):
     # Absolute executable, closed environment, hard deadline, own process
     # group so a timed-out child cannot linger.
-    proc = subprocess.Popen(argv, env=CHILD_ENV, start_new_session=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        argv,
+        env=CHILD_ENV,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -106,7 +111,8 @@ def fetch(commit, name, cap):
         raise InstallError(
             f"could not fetch {name} from the publisher at {commit[:12]}…: {e}\n"
             "Check the network connection, and 'git status' if the checkout has "
-            "unpushed commits.")
+            "unpushed commits."
+        )
     if len(body) > cap:
         raise InstallError(f"{name}: publisher response exceeds {cap} bytes")
     return body
@@ -181,8 +187,9 @@ def stage(destdir, blob, mode):
 
 
 def install(commit, user):
-    manifest = parse_manifest(fetch(commit, MANIFEST_NAME, MANIFEST_CAP)
-                              .decode("utf-8", "strict"))
+    manifest = parse_manifest(
+        fetch(commit, MANIFEST_NAME, MANIFEST_CAP).decode("utf-8", "strict")
+    )
 
     # Fetch and digest-verify every artifact BEFORE touching the system.
     blobs = {}
@@ -269,7 +276,9 @@ def install(commit, user):
     if run([HELPER, "status"], timeout=15) == 0:
         print("System components installed and working.")
     else:
-        print("Components installed, but the helper reported an error (non-Dell machine?).")
+        print(
+            "Components installed, but the helper reported an error (non-Dell machine?)."
+        )
 
 
 def uninstall():
@@ -291,7 +300,9 @@ def uninstall():
 
 def main():
     if os.geteuid() != 0:
-        fail("internal error: the installer core must run as root (use ./install-system.sh)")
+        fail(
+            "internal error: the installer core must run as root (use ./install-system.sh)"
+        )
 
     args = sys.argv[1:]
     if args == ["--uninstall"]:

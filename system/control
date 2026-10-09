@@ -1,15 +1,16 @@
 #!/usr/bin/python3 -I
 """Installed fixed-path CLI. Never activates test seams from environment/args."""
+
 import json
 import os
-from pathlib import Path
 import signal
 import sys
+from pathlib import Path
 
 # -I excludes cwd/PYTHONPATH/user site. Only sibling backend is loaded.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.dont_write_bytecode = True
-from backend import Controller, Hardware, PROTOCOL_VERSION, Refused
+from backend import PROTOCOL_VERSION, Controller, Hardware, Refused
 
 
 def deadline(signum, frame):
@@ -25,20 +26,44 @@ if __name__ == "__main__":
     try:
         snapshot_restore = len(sys.argv) == 4 and sys.argv[1] == "profile-restore-state"
         snapshot_apply = len(sys.argv) == 5 and sys.argv[1] == "profile-owned-state"
-        if len(sys.argv) > 8 or any(len(arg) > (8192 if (snapshot_restore and i > 1) or (snapshot_apply and i == 4) else 64) for i, arg in enumerate(sys.argv[1:], 1)):
+        if len(sys.argv) > 8 or any(
+            len(arg)
+            > (
+                8192
+                if (snapshot_restore and i > 1) or (snapshot_apply and i == 4)
+                else 64
+            )
+            for i, arg in enumerate(sys.argv[1:], 1)
+        ):
             raise Refused("Arguments exceed bounds")
         if len(sys.argv) > 1 and sys.argv[1] not in read_ops and os.geteuid() != 0:
             raise Refused("This operation requires authorization")
         if len(sys.argv) > 1 and sys.argv[1] == "status-live" and os.geteuid() != 0:
             raise Refused("Live WMI status requires authorization")
-        result = Controller(Hardware(), rollback_deadline=lambda: signal.alarm(10)).execute(sys.argv[1:])
+        result = Controller(
+            Hardware(), rollback_deadline=lambda: signal.alarm(10)
+        ).execute(sys.argv[1:])
     except (OSError, Refused) as error:
-        result = {"ok": False, "protocolVersion": PROTOCOL_VERSION, "applied": False,
-                  "error": str(error)[:512],
-                  "rollback": {"attempted": None, "ok": None, "error": "Transaction outcome unavailable"}}
+        result = {
+            "ok": False,
+            "protocolVersion": PROTOCOL_VERSION,
+            "applied": False,
+            "error": str(error)[:512],
+            "rollback": {
+                "attempted": None,
+                "ok": None,
+                "error": "Transaction outcome unavailable",
+            },
+        }
     signal.alarm(0)
     encoded = json.dumps(result, separators=(",", ":"), allow_nan=False)
     if len(encoded) > 65536:
-        encoded = json.dumps({"ok": False, "protocolVersion": PROTOCOL_VERSION, "error": "Output exceeded bound"})
+        encoded = json.dumps(
+            {
+                "ok": False,
+                "protocolVersion": PROTOCOL_VERSION,
+                "error": "Output exceeded bound",
+            }
+        )
     print(encoded)
     sys.exit(0 if result.get("ok") else 1)

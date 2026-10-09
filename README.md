@@ -9,7 +9,7 @@ Battery status, power profiles, live power flow, and **Dell charge limit control
 - Battery percentage, state, current capacity (energy stored now) and cycle count. When charging stops, the stats show the charge limit: the Custom thresholds (battery state **Holding**) or the mode that stopped it (**Paused**).
 - **Battery details** (optional) — firmware health, capacity health, full and design capacity and battery temperature. Values derived from charge readings are noted as estimates.
 - AC/battery power profiles (power-profiles-daemon). The buttons keep a fixed order and show the chosen profile at once while it applies.
-- **Power flow chain** (optional, off by default) — live energy flow with a fixed layout: `[Source: adapter W] ⇄ [Components: CPU / iGPU / RAM / Other] ⇄ [Battery: ±W]`. Animated pixel dots show the flow direction. The adapter tile shows the total it provides (RAPL `psys`, which measures the platform _excluding_ battery charge on this EC, plus the charge power). CPU and RAM come from the `package-0` and `dram` RAPL domains. An iGPU row appears only where an independent reading exists; otherwise the CPU row shows the whole CPU package. "Other" (screen, storage, PCH, fans…) is the deduced remainder (components − CPU − RAM; on CPUs without a `dram` domain, such as Meteor Lake, memory is part of it and the RAM row is hidden). The breakdown is hidden behind the small `+` button on the components tile. The battery always stays on the right. On battery, component draw is measured from the battery discharge. The battery current sign is corrected from the battery STATE (the EC reports unsigned current even while discharging), so a weak USB-C adapter that leaves the battery powering the laptop is shown correctly: negative battery flow, tiny adapter contribution. The battery tile also shows live pack voltage and current (`8.68 V · +1.8 A` — same ± convention as the watts). The sampling runs inside the privileged helper (`control power-chain`): the RAPL counters stay root-only and the helper returns only 1-second aggregate watts. No helper → the whole power-flow section simply stays hidden. The section header marks the values as estimates, and sampling runs only while the panel is open.
+- **Power flow chain** (optional, off by default) — live energy flow with a fixed layout: `[Source: adapter W] ⇄ [Components: CPU / iGPU / RAM / Other] ⇄ [Battery: ±W]`. Animated pixel dots show the flow direction. The adapter tile shows the total it provides (RAPL `psys`, which measures the platform _excluding_ battery charge on this EC, plus the charge power). CPU and RAM come from the `package-0` and `dram` RAPL domains. An iGPU row appears only where an independent reading exists; otherwise the CPU row shows the whole CPU package. "Other" (screen, storage, PCH, fans…) is the deduced remainder (components − CPU − RAM; on CPUs without a `dram` domain, such as Meteor Lake, memory is part of it and the RAM row is hidden). The breakdown is hidden behind the small `+` button on the components tile. The battery always stays on the right. On battery, component draw is measured from the battery discharge. The battery current sign is corrected from the battery STATE (the EC reports unsigned current even while discharging), so a weak USB-C adapter that leaves the battery powering the laptop is shown correctly: negative battery flow, tiny adapter contribution. The battery tile also shows live pack voltage and current (`8.68 V · +1.8 A` — same ± convention as the watts). The sampling runs inside the privileged helper (`dell-charge-limit power-chain`): the RAPL counters stay root-only and the helper returns only 1-second aggregate watts. No helper → the whole power-flow section simply stays hidden. The section header marks the values as estimates, and sampling runs only while the panel is open.
 - **Charge limit on the battery bar** — the start/stop thresholds are drawn directly on the battery progress bar (accent zone + draggable markers, step 5, configurable). Dragging a marker switches the charge mode to `Custom` automatically; the zone appears dimmed while another mode is active, and the hover tooltip explains the state. The helper enforces the firmware invariants (start 50–95, stop 55–100, stop ≥ start + 5), writes both thresholds in one step, reads them back and rolls back if the firmware does not keep them.
 - **Charge mode** — `Standard` / `Express` / `Adaptive` / `PrimAcUse` / `Custom` (Long Life Cycle is read-only on the Latitude 7390 — the firmware refuses writes — so it is not exposed as a control). Where the kernel offers the native `charge_types` interface the modes map to its `Standard`, `Fast`, `Adaptive`, `Trickle` and `Custom`; otherwise they go through `dell-wmi-sysman`. Choosing `PrimAcUse` (the **AC** button) remembers the previous mode and thresholds, and a **Restore** button puts them back.
 - **USB PowerShare** toggle
@@ -27,69 +27,75 @@ Battery status, power profiles, live power flow, and **Dell charge limit control
 
 - Omarchy with the Quickshell plugin system
 - A Dell laptop exposing `/sys/class/power_supply/BAT0/charge_control_{start,end}_threshold` (`dell-smm-hwmon` / `dell_laptop`) and the `/sys/class/firmware-attributes/dell-wmi-sysman` interface, or an Alienware laptop exposing `CustomChargeStart` / `CustomChargeStop` through `dell-wmi-sysman` (thermal modes and fan boost need the kernel's `alienware-wmi` driver with its platform profile and hwmon support), or a Dell laptop exposing the native `charge_types` interface (Dell thermal modes need the kernel's `dell-pc` driver)
-- Python, power-profiles-daemon, sudo and polkit for the privileged helper, and `makepkg` (base-devel) to build it
+- Python 3 for the privileged helper
 - An Intel CPU for the power-flow chain (RAPL `powercap` counters) — the rest of the widget works without it
 
 ## Install
 
-1. From a checkout of this repository, install the plugin and the privileged helper:
+1. Add the plugin:
 
    ```bash
-   cd omarchy-dell-power
-   ./install.sh
+   omarchy plugin add https://github.com/NIPSEN/omarchy-dell-power.git --enable
    ```
 
-   Run it as your regular user. The installer validates the manifest, builds the helper locally into a pacman package with `makepkg`, installs it (through `sudo` in a terminal, or polkit outside one), checks that the helper and the panel speak the same protocol, copies the plugin to `~/.config/omarchy/plugins/local.dell-power-extension`, rescans the plugins and enables the widget (on the right the first time; updates keep its place). Nothing is downloaded.
+2. Install the privileged helper and its polkit action:
 
-2. Restart the shell if the widget does not appear:
+   ```bash
+   cd ~/.config/omarchy/plugins/io.github.nipsen.dell-power
+   ./install-system.sh
+   ```
+
+   Run it as your regular user: the wrapper is unprivileged and elevates only the authenticated installer core via `sudo` (it will ask for your password). Step 2 needs network access — the installer core, the manifest and the payloads are all fetched from GitHub at the checkout's HEAD commit; root never reads the user-writable checkout.
+
+3. Restart the shell if it was already running:
 
    ```bash
    omarchy restart shell
    ```
 
-| Option         | Effect                                                  |
-| -------------- | ------------------------------------------------------- |
-| `--ui-only`    | Copy the plugin without installing the helper           |
-| `--no-enable`  | Install without enabling the widget                     |
-| `--no-restart` | Skip the shell restart after an update                  |
-| `--dry-run`    | Show what would change without changing anything        |
-| `--uninstall`  | Remove what the installer added (see [Remove](#remove)) |
+Installing applies no charging, profile, USB, fan or brightness settings and turns on no policy.
 
-Installing applies no charging, profile, USB, fan or brightness settings and turns on no policy. `install-system.sh` is the original installer for the `/usr/local/bin/dell-charge-limit` helper, which this version of the panel does not use.
+**Without step 2**, the widget works as a plain battery indicator (percentage, stats, power profiles) and every Dell section — charge limit, charge mode, USB, **power flow** — stays hidden, with no error and no prompt. The panel then shows a **DELL SETUP** section with the exact command to run (click it to copy to the clipboard); it disappears as soon as the helper is installed. The power flow requires the helper by design: the RAPL energy counters are root-only reads by kernel default (PLATYPUS / CVE-2020-8694) and there is no unprivileged path — the helper samples them as root and only returns 1-second aggregate watts.
 
-**Without the helper** (`--ui-only`), the widget works as a plain battery indicator (percentage, stats, power profiles) and every Dell section — charge limit, charge mode, USB, **power flow** — stays hidden, with no error and no prompt. The panel then shows a **DELL SETUP** section with the exact command to run (click it to copy to the clipboard); it disappears as soon as the helper is installed. The power flow requires the helper by design: the RAPL energy counters are root-only reads by kernel default (PLATYPUS / CVE-2020-8694) and there is no unprivileged path — the helper samples them as root and only returns 1-second aggregate watts.
+### What install-system.sh installs
 
-### What install.sh installs
+| Path | Purpose |
+| --- | --- |
+| `/usr/local/bin/dell-charge-limit` | Privileged helper (allowlisted operations only, incl. the power-flow sampler) |
+| `/usr/local/lib/dell-power/backend.py` | The helper's transactions (fresh reads, verified writes, rollback) |
+| `/usr/share/polkit-1/actions/io.github.nipsen.dell-power.policy` | polkit action (`auth_admin`, pinned path) — fallback path |
+| `/etc/sudoers.d/dell-power` | `NOPASSWD` sudo rule for the installing user, scoped to the helper — primary path |
 
-| Path                                                            | Purpose                                                                                                                |
-| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `/usr/lib/dell-power-extension/control`                         | Privileged helper (allowlisted operations only, incl. the power-flow sampler), from the `dell-power-extension` package |
-| `/usr/share/polkit-1/actions/local.dell-power-extension.policy` | polkit action (`auth_admin`, pinned path) — fallback path                                                              |
-| `/etc/sudoers.d/dell-power-extension`                           | `NOPASSWD` sudo rule for the installing user, scoped to the helper — primary path                                      |
-| `~/.config/omarchy/plugins/local.dell-power-extension/`         | The copied plugin                                                                                                      |
-| `~/.local/state/dell-power-extension/`                          | Private snapshots for Restore and saved settings                                                                       |
+The wrapper fetches the installer core and the publisher manifest (`SHA256SUMS`) over HTTPS at the checkout's HEAD commit (single publisher host, no redirects, bounded sizes, hard deadlines), authenticates the core's bytes against the manifest _before_ privilege is granted, then hands them to the interpreter through an anonymous pipe — root never opens a path from the user-writable checkout, and only bytes matching a commit actually pushed to GitHub ever run as root. The core re-fetches each payload from the publisher, verifies it against the manifest, and activates transactionally: the existing sudoers authorization is revoked first, every payload is staged (`O_EXCL`, 0600) and digest-checked, the privileged set is committed, the installed files are re-hashed, and the validated sudoers rule is restored last — any failure rolls back to the prior complete set. Child processes run from absolute paths with a closed environment and process-group cleanup.
 
-The sudoers rule and the polkit action are activated only after the package is installed and its files are checked to be root-owned and not writable by other users; on an update the rule is revoked first and restored once the new helper answers with a compatible protocol. Child processes run from absolute paths with a closed environment and hard deadlines. There is no boot service: Alienware BIOS charge limits, which only root can read, are read on demand through the helper.
+Versions up to 1.5.0 also installed `dell-power-state.service`, which cached the root-only Alienware BIOS settings at boot. The helper now reads them on demand, so the installer disables and removes that service.
 
-Reads of thresholds and battery state need no privilege. Writes, and the power-flow sampling (RAPL counters are root-only by kernel default), run through `sudo -n /usr/lib/dell-power-extension/control …`, which needs no password thanks to the narrow sudoers rule (the helper itself refuses everything outside its hardcoded allowlist). If the sudoers rule is missing, _writes_ fall back to `pkexec`, which asks for the password via the Omarchy polkit agent; the power-flow readout stays hidden instead.
+Reads of thresholds and battery state need no privilege. Writes, and the power-flow sampling (RAPL counters are root-only by kernel default), run through `sudo -n /usr/local/bin/dell-charge-limit …`, which needs no password thanks to the narrow sudoers rule (the helper itself refuses everything outside its hardcoded allowlist). If the sudoers rule is missing, _writes_ fall back to `pkexec`, which asks for the password via the Omarchy polkit agent; the power-flow readout stays hidden instead.
 
 ## Updating
 
-Update the checkout, then re-run the installer from it:
+The plugin is a git checkout, so updates are pulled straight from GitHub:
 
 ```bash
-cd omarchy-dell-power
-git pull
-./install.sh
+omarchy plugin update io.github.nipsen.dell-power
 ```
 
-The installer rebuilds and reinstalls the helper only when its files changed, checks that the helper and the panel speak the same protocol, copies the plugin and restarts the shell (`--no-restart` skips that). Editing the checkout does not change the installed copy until you re-run it. If a hardware change is still being applied, the installer refuses until it finishes. A helper the panel does not understand disables only the sections it would serve, and the panel shows the command to update it.
+This fast-forwards the plugin code, re-validates the manifest and reloads the plugins in the running shell — no restart needed.
+
+**It does not update the privileged helper.** When a release changes `system/*` (the helper, its backend or the polkit action), re-run the installer after updating:
+
+```bash
+cd ~/.config/omarchy/plugins/io.github.nipsen.dell-power
+./install-system.sh
+```
+
+Run from the just-updated checkout, it fetches and verifies the payloads at the new HEAD commit, so the installed helper always matches the plugin code. Until then, sections the older helper cannot serve stay hidden, and the panel shows the command to run.
 
 ## Security notes
 
-- **No world-readable RAPL counters.** Earlier versions shipped a udev rule making `energy_uj` world-readable (`0444`) for the power-flow feature. That restored the PLATYPUS side channel (CVE-2020-8694) and was removed: the helper now samples the counters as root and returns only bounded 1-second aggregate watts. The installer does not touch udev rules or RAPL permissions, so the kernel default (`0400`) stays.
+- **No world-readable RAPL counters.** Earlier versions shipped a udev rule making `energy_uj` world-readable (`0444`) for the power-flow feature. That restored the PLATYPUS side channel (CVE-2020-8694) and was removed: the helper now samples the counters as root and returns only bounded 1-second aggregate watts. Installing this version immediately restores `0400`, as does `--uninstall`.
 - The sudoers rule grants the installing user passwordless root on the helper path only. The helper validates every argument against hardcoded allowlists (charge modes, charge thresholds 50–95/55–100, USB PowerShare and Type-C power with fixed value sets, the thermal profiles the kernel defines and the firmware lists, fan boost 0–255 for the Alienware CPU and GPU fan groups, the internal display's brightness cap and its restore, plus the read-only `status`, `sensors` and `power-chain` commands), so the reachable surface is exactly what the panel exposes. Argument count and length are bounded.
-- Privileged-code provenance: root runs only the helper from the `dell-power-extension` package, which the installer builds from the checkout with `makepkg`, without downloads. The sudoers rule names that one root-owned file, never an interpreter or the setup script, and is revoked before an update and restored only after the new helper checks out. Child processes run from absolute paths with a closed environment and hard deadlines.
+- Privileged-code provenance: root executes only publisher bytes. The installer core is fetched over HTTPS at the checkout's HEAD commit, digest-verified against the publisher manifest _before_ elevation, and handed to the interpreter through an anonymous pipe — no mutable checkout path is ever opened as root. Payloads are verified against the same manifest, staged `O_EXCL`, and activated transactionally: the existing sudoers authorization is revoked first, the validated rule is restored last, and any failure rolls back to the prior complete set. Child processes run from absolute paths with a closed environment, hard deadlines and process-group cleanup. The helper loads its backend only from the root-owned `/usr/local/lib/dell-power`.
 - Every change is a transaction: a lock, fresh reads, a snapshot, the write, an exact readback and a rollback if the firmware does not keep the requested state. Restore only changes values that are still the ones the plugin applied; changes made elsewhere are left alone.
 
 ## Configuration
@@ -98,7 +104,7 @@ Inline settings in the widget's `shell.json` bar entry:
 
 ```json
 {
-  "id": "local.dell-power-extension",
+  "id": "io.github.nipsen.dell-power",
   "showPercentage": false,
   "chargeLimitStep": 5,
   "syncPpd": true
@@ -151,27 +157,43 @@ Each feature also has a pair of switches, for example `thermalEnabled` / `therma
 ## Remove
 
 ```bash
-cd omarchy-dell-power
-./install.sh --uninstall
+~/.config/omarchy/plugins/io.github.nipsen.dell-power/install-system.sh --uninstall
+omarchy plugin remove io.github.nipsen.dell-power
 ```
 
-This revokes the sudoers rule and polkit action, removes the helper package and the copied plugin, and keeps your settings and Restore snapshots.
+Uninstall first: `omarchy plugin remove` deletes the checkout that the uninstaller uses to resolve which published commit to fetch.
 
 Removing the plugin does not reset the charge thresholds stored in the battery EC, the charge mode, the thermal mode or the brightness. Set the values you want before removal, e.g.:
 
 ```bash
-sudo /usr/lib/dell-power-extension/control charge-mode Standard
+sudo /usr/local/bin/dell-charge-limit charge-mode Standard
 ```
 
 ## Development
 
-The installed plugin is a copy: after editing the checkout, re-run `./install.sh` (`--ui-only` when only the panel changed). If a change fails to apply, force a rescan with `omarchy-shell shell rescanPlugins` (or `omarchy restart shell` as a last resort).
+Files under `~/.config/omarchy/plugins/` hot-reload on save. If a change fails to apply, force a rescan with `omarchy-shell shell rescanPlugins` (or `omarchy restart shell` as a last resort).
+
+To work on a local checkout instead of a plugin added from GitHub, `install.sh` links it into the plugins directory; `--helper` installs the privileged helper from the checkout through the same installer core, which then reads the payloads from the checkout instead of fetching them:
 
 ```bash
-make test       # JavaScript models, helper, installer and package tests
+./install.sh --link             # symlink this checkout as the plugin and enable the widget
+./install.sh --link --helper    # also install the helper from this checkout (sudo)
+./install.sh                    # copy instead of linking
+./install.sh --uninstall        # remove the link or copy (with --helper, the helper too)
+```
+
+`--no-enable` installs without adding the widget to the bar; `--no-restart` skips the shell restart after an update. The script refuses to replace a plugin added with `omarchy plugin add`.
+
+When a privileged payload (`system/*`) changes, regenerate the publisher manifest, then commit **and push** — installs only succeed at a pushed commit whose manifest matches the payloads (`install.sh --helper` checks it too):
+
+```bash
+make sums   # sha256sum system/installer.py system/dell-charge-limit system/backend.py system/*.policy > SHA256SUMS
+```
+
+```bash
+make test       # JavaScript models, helper, installer core and install.sh tests
 make qml        # loads the panel offscreen with simulated hardware
 make validate   # manifest and whitespace
-make package    # builds the helper package with makepkg
 
 omarchy plugin validate .
 node Model.test.js

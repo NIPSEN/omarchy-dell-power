@@ -5,68 +5,91 @@ import Quickshell.Services.UPower
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "PresentationModel.js" as Presentation
 
 Panel {
   id: root
   moduleName: "io.github.nipsen.dell-power"
   ipcTarget: "io.github.nipsen.dell-power"
-  // manageIpc: false so this panel can own the single IpcHandler the target
-  // permits — needed for the togglePercentage method below.
   manageIpc: false
-  property var batteryInfo: ({})
-  property var systemInfo: ({})
-  property var profiles: []
-  property string activeProfile: ""
+  readonly property var service: root.bar && root.bar.shell && typeof root.bar.shell.serviceFor === "function"
+    ? root.bar.shell.serviceFor(root.moduleName) : null
+  readonly property var powerController: service ? service.controller : null
+  property var attachedController: null
+  readonly property string panelToken: "panel-" + Date.now() + "-" + Math.random()
+  property bool featuresOpen: false
+  onFeaturesOpenChanged: { panelScroll.contentY = 0; keyCatcher.forceActiveFocus() }
+  readonly property var batteryInfo: powerController ? powerController.batteryInfo : ({ percentage: Math.round(root.batteryFraction * 100) + "%" })
+  readonly property var profiles: powerController ? powerController.profiles : []
+  readonly property string activeProfile: powerController ? powerController.activeProfile : ""
   property int profileIndex: 0
   property bool cursorActive: false
-  property var dellStatus: null
-  property bool dellBusy: false
-  property bool dellProbed: false
+  readonly property var dellStatus: powerController ? powerController.dellStatus : null
+  readonly property bool dellBusy: powerController ? powerController.busy : false
+  readonly property bool dellProbed: powerController ? powerController.probed : false
+  readonly property string dellError: powerController ? powerController.error : ""
   property bool setupCopied: false
-  property string dellError: ""
-  property string dellActionOutput: ""
-  property string dellActionError: ""
-  property var dellActionArgs: []
-  property bool dellTriedPkexec: false
-  property bool dellActionHandled: false
-  property var powerChain: null
-  // Every spawned process runs with absolute executables and a closed,
-  // minimal environment: a shadowed binary earlier in the shell PATH must
-  // never get code execution (or impersonate the privilege UI) on routine
-  // plugin activity. The helper is only ever invoked by its fixed installed
-  // path. (The omarchy tools call each other internally, hence their dir.)
-  readonly property string helperPath: "/usr/local/bin/dell-charge-limit"
-  readonly property var procEnv: ({ "PATH": "/usr/share/omarchy/bin:/usr/bin:/bin" })
-  readonly property int chargeLimitStep: {
-    var s = Number(setting("chargeLimitStep", 5))
-    return (isFinite(s) && s > 0) ? Math.min(60, Math.round(s)) : 5
-  }
-  readonly property bool dellSupported: dellStatus !== null && dellStatus.ok === true && dellStatus.dell === true
-  readonly property bool dellThresholdsReady: dellSupported && dellStatus.hasThresholds
-  readonly property bool dellWmiReady: dellSupported && dellStatus.hasWmi
-  readonly property bool usbPowerShareReady: dellWmiReady && dellStatus.usbPowerShare !== ""
-  readonly property bool typeCPowerReady: dellWmiReady && dellStatus.typeCPower !== ""
-  // Alienware laptops (and any whose helper reports them): the firmware's thermal
-  // modes, and the fans and temperatures the EC reports.
-  readonly property string brand: dellStatus !== null ? dellStatus.brand : "Dell"
-  readonly property var thermal: dellStatus !== null ? dellStatus.thermal : null
-  readonly property var thermalModes: Model.thermalChoices(thermal)
-  readonly property bool thermalReady: thermal !== null && Model.thermalExtended(thermal)
-  readonly property var fans: dellStatus !== null ? dellStatus.fans : []
-  readonly property var fanNames: Model.fanNames(fans)
-  readonly property var temps: dellStatus !== null ? dellStatus.temps : []
-  readonly property bool sensorsReady: fans.length > 0 || temps.length > 0
-  readonly property bool fanBoostAvailable: Model.groupBoost(fans, "cpu") !== null || Model.groupBoost(fans, "gpu") !== null
-  // Fresh clone before install-system.sh: the status poll fails (helper not
-  // on PATH), so dellStatus stays null once probed. A non-Dell machine with
-  // the helper installed answers {dell:false} instead — no hint there.
-  readonly property bool helperMissing: dellProbed && dellStatus === null
+  readonly property var powerChain: powerController && featureShown("powerFlow") ? powerController.powerChain : null
+  readonly property var basicBattery: powerController && powerController.status && powerController.status.battery ? powerController.status.battery : ({})
   readonly property string setupCommand: "~/.config/omarchy/plugins/io.github.nipsen.dell-power/install-system.sh"
+  readonly property var procEnv: ({ "PATH": "/usr/bin:/bin" })
+  readonly property int chargeLimitStep: {
+    var v = powerController ? powerController.settings.chargeLimitStep : setting("chargeLimitStep", 5)
+    var n = Number(v)
+    return isFinite(n) && n > 0 ? Math.min(60, Math.round(n)) : 5
+  }
+  readonly property bool dellSupported: dellStatus !== null && dellStatus.ok && dellStatus.dell
+  readonly property bool dellThresholdsReady: capability("thresholds") && featureShown("thresholds") && dellStatus && dellStatus.hasThresholds
+  readonly property bool dellWmiReady: capability("charging") && featureShown("charging")
+  readonly property bool usbPowerShareReady: capability("usb") && featureShown("usb") && dellStatus && dellStatus.usbPowerShare !== ""
+  readonly property bool typeCPowerReady: capability("usb") && featureShown("usb") && dellStatus && dellStatus.typeCPower !== ""
+  readonly property string brand: dellStatus ? dellStatus.brand : "Dell"
+  readonly property var thermal: dellStatus ? dellStatus.thermal : null
+  readonly property var thermalModes: Model.thermalChoices(thermal)
+  readonly property bool thermalReady: capability("thermal") && featureShown("thermal") && thermalModes.length > 0
+  readonly property var fans: powerController && featureShown("telemetry") ? powerController.fans : []
+  readonly property var fanNames: Model.fanNames(fans)
+  readonly property var temps: powerController && featureShown("telemetry") ? powerController.temps : []
+  readonly property var controlFans: dellStatus ? dellStatus.fans : []
+  // Fans the firmware reports without a speed would only render empty rows.
+  readonly property bool fansReadable: fans.some(function(f) { return f && f.rpm !== null && f.rpm !== undefined })
+  readonly property bool sensorsReady: featureShown("telemetry") && (fansReadable || temps.length > 0)
+  readonly property bool fanBoostAvailable: capability("fanBoost") && featureShown("fanBoost")
+  readonly property bool helperMissing: powerController !== null && dellProbed && (!powerController.helperCompatible || dellStatus === null)
+  readonly property bool profilesReady: featureShown("systemProfiles") && profiles.length > 0
+  readonly property bool profilesLinked: !!(powerController && powerController.settings.syncPpd === true && capability("systemProfiles"))
+  readonly property bool policiesShown: featureShown("automation") || featureShown("saver") || featureShown("brightness")
+  readonly property bool policiesOn: featureEnabled("automation") || featureEnabled("saver")
+
+  // A choice shows as selected the moment it is clicked and settles on the
+  // verified state once the helper answers, so chips never flash back to the
+  // old value while the action is queued or the status poll is in flight.
+  property string pendingProfile: ""
+  property string pendingCharge: ""
+  property string pendingThermal: ""
+
+  function capability(name) {
+    return !!(powerController && powerController.helperCompatible && powerController.status && powerController.status.capabilities && powerController.status.capabilities[name])
+  }
+  function featureShown(name) { return powerController ? powerController.featureVisible(name) : false }
+  function featureEnabled(name) { return powerController ? powerController.featureEnabled(name) : false }
+  function syncAttachment() {
+    if (attachedController === powerController) return
+    if (attachedController) attachedController.detachPanel(panelToken)
+    attachedController = powerController
+    if (attachedController) {
+      attachedController.attachPanel(panelToken, root)
+      attachedController.setPanelOpen(panelToken, opened)
+    }
+  }
+  onPowerControllerChanged: syncAttachment()
+  Component.onCompleted: syncAttachment()
+  Component.onDestruction: if (attachedController) attachedController.detachPanel(panelToken)
   property bool draggingStart: false
   property bool draggingStop: false
   property int previewStart: -1
   property int previewEnd: -1
-  readonly property bool showPercentage: setting("showPercentage", false) === true
+  readonly property bool showPercentage: powerController ? powerController.settings.showPercentage === true : setting("showPercentage", false) === true
   // With the percentage shown the button paints a text block wider than an
   // icon, so the open-panel mark takes the painted width instead of the
   // icon-sized fraction of the slot the fallback assumes.
@@ -110,18 +133,19 @@ Panel {
 
   readonly property bool fullyCharged: {
     var device = UPower.displayDevice
-    return device && device.isPresent && device.state === UPowerDeviceState.FullyCharged && !root.chargeThresholdActive
+    return device && device.isPresent && device.state === UPowerDeviceState.FullyCharged && !root.chargingPaused
   }
   readonly property bool discharging: {
     var device = UPower.displayDevice
     return !!(device && device.isPresent && UPower.onBattery)
   }
-  readonly property bool chargeThresholdActive: {
+  readonly property bool chargingPaused: {
     var device = UPower.displayDevice
     return Model.chargeThresholdActive(device, root.discharging, upowerStates())
   }
+  readonly property bool chargeThresholdActive: chargingPaused && dellStatus !== null && dellStatus.mode === "Custom" && capability("thresholds")
   readonly property bool batteryFull: fullyCharged || (!root.discharging && batteryFraction >= 1)
-  readonly property bool batteryFlowIdle: batteryFull || chargeThresholdActive
+  readonly property bool batteryFlowIdle: batteryFull || chargingPaused
 
   // 0..1 charge level, used by the visual progress bar.
   readonly property real batteryFraction: {
@@ -178,169 +202,71 @@ Panel {
     if (rotatingPhrases) return activePhrases[phraseIndex % activePhrases.length]
     return modeLabel()
   }
+  readonly property var chargeModes: Presentation.orderedChargeModes(powerController && powerController.status && powerController.status.chargeModes
+    ? powerController.status.chargeModes : Model.DELL_MODES)
+  readonly property string chargeMode: pendingCharge !== "" ? pendingCharge : (dellStatus ? dellStatus.mode : "")
+  readonly property string thermalMode: pendingThermal !== "" ? pendingThermal : (thermal ? thermal.profile : "")
+  readonly property string shownProfile: pendingProfile !== "" ? pendingProfile : activeProfile
 
-  function refresh() {
-    if (!batteryPresent) return
-
-    if (!batteryProc.running) batteryProc.running = true
-    if (!profilesProc.running) profilesProc.running = true
-    if (!systemProc.running) systemProc.running = true
-  }
-
-  function updateKeyValue(raw, targetName) {
-    var next = Model.parseKeyValue(raw)
-    // Keep last known good data if a refresh briefly returns nothing — happens
-    // around AC plug/unplug events. Avoids the section collapsing mid-transition.
-    if (Object.keys(next).length === 0) return
-    if (targetName === "battery") batteryInfo = next
-    else systemInfo = next
-  }
-
-  function updateProfiles(raw) {
-    var parsed = Model.parseProfiles(raw, profileIndex)
-    // Same guard as battery: preserve the last known profile list across
-    // transient empty payloads so the buttons don't blink out.
-    if (parsed.profiles.length === 0) return
-    profiles = parsed.profiles
-    activeProfile = parsed.activeProfile
-    profileIndex = parsed.profileIndex
-    if (opened && !cursorActive) {
-      var idx = profiles.indexOf(activeProfile)
-      if (idx >= 0) profileIndex = idx
-    }
-  }
-
+  function refresh() { if (powerController) powerController.refresh() }
+  function openFeatures() { featuresOpen = true; root.open() }
   function setProfile(profile) {
-    if (!profile || actionProc.running) return
-    actionProc.command = ["/usr/bin/timeout", "-k", "5", "15", "/usr/share/omarchy/bin/omarchy-powerprofiles-set", root.discharging ? "battery" : "ac", profile]
-    actionProc.running = true
+    if (!powerController || pendingProfile !== "") return
+    powerController.setProfile(profile)
+    if (queued() && profile !== activeProfile) pendingProfile = profile
   }
-
   function togglePercentage() {
-    root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
-    if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
-  }
-
-  // ---------- Dell charge controls ----------
-
-  function refreshDell() {
-    if (!dellProc.running && !dellBusy) dellProc.running = true
-  }
-
-  function updateDellStatus(raw) {
-    var parsed = Model.parseDellStatus(raw)
-    if (!parsed) return
-    dellStatus = parsed
-  }
-
-  function dellRun(args) {
-    if (dellBusy) return
-    dellError = ""
-    dellActionOutput = ""
-    dellActionError = ""
-    dellActionArgs = args
-    dellTriedPkexec = false
-    dellActionHandled = false
-    dellBusy = true
-    // Primary path: sudo -n (silent thanks to the sudoers rule
-    // installed by install-system.sh). If it fails (missing rule),
-    // onDellActionFinished retries ONCE with pkexec (dialog).
-    dellActionProc.command = ["/usr/bin/timeout", "-k", "5", "120", "/usr/bin/sudo", "-n", root.helperPath].concat(args)
-    dellActionProc.running = true
-  }
-
-  function onDellActionFinished() {
-    if (dellActionHandled) return
-    dellActionHandled = true
-    if (String(dellActionOutput).trim() === "") {
-      // sudo -n failed without output: fall back to pkexec, once only.
-      if (!dellTriedPkexec) {
-        dellTriedPkexec = true
-        dellActionHandled = false
-        dellActionOutput = ""
-        dellActionError = ""
-        dellActionProc.command = ["/usr/bin/timeout", "-k", "5", "300", "/usr/bin/pkexec", root.helperPath].concat(dellActionArgs)
-        dellActionProc.running = true
-        return
-      }
-      dellBusy = false
-      var detail = String(dellActionError || "").trim()
-      dellError = "Action cancelled" + (detail !== "" ? " — " + detail : "")
-      refreshDell()
-      return
+    if (powerController) powerController.setSetting("showPercentage", !showPercentage)
+    else {
+      root.settings = Object.assign({}, root.settings, { showPercentage: !root.showPercentage })
+      if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings)
     }
-    dellBusy = false
-    var parsed = Model.parseDellStatus(dellActionOutput)
-    if (parsed) {
-      dellStatus = parsed
-      var rawObj = null
-      try { rawObj = JSON.parse(dellActionOutput) } catch (e) { rawObj = null }
-      if (rawObj && rawObj.applied === false) {
-        dellError = "Refused by the firmware (read back: " + String(rawObj.readback || "") + ")"
-      }
-      refreshDell()
-      return
-    }
-    var msg = ""
-    try {
-      var obj = JSON.parse(dellActionOutput)
-      // The helper reports failures as a bare JSON string ("..."), not an
-      // object — handle both shapes so the message actually reaches the UI.
-      msg = typeof obj === "string" ? obj : String(obj.error || "")
-    } catch (e) {
-      msg = ""
-    }
-    dellError = msg !== "" ? msg : "Privileged action failed"
-    refreshDell()
   }
-
-  function setDellMode(mode) {
-    if (!dellWmiReady || mode === dellStatus.mode) return
-    dellRun(["wmi", "PrimaryBattChargeCfg", mode])
+  function setDellMode(mode) { if (powerController) powerController.setChargeMode(mode) }
+  // Primarily AC Use is the battery protection mode: choosing it captures the
+  // previous mode and thresholds so it can be undone with Restore.
+  function chooseChargeMode(mode) {
+    if (!powerController || !dellStatus || mode === dellStatus.mode || pendingCharge !== "") return
+    var t = powerController.status ? powerController.status.thresholds : null
+    if (mode === "PrimAcUse" && t && t.start !== null && t.end !== null) powerController.enableProtection()
+    else setDellMode(mode)
+    if (queued()) pendingCharge = mode
   }
-
-  function setUsbPowerShare() {
-    if (!dellWmiReady) return
-    var current = String(dellStatus.usbPowerShare || "")
-    var next = current === "Enabled" ? "Disabled" : "Enabled"
-    dellRun(["wmi", "UsbPowerShare", next])
-  }
-
-  function setDellTypeCPower(value) {
-    if (!dellWmiReady || value === dellStatus.typeCPower) return
-    dellRun(["wmi", "TypeCPower", value])
-  }
-
-  // ---------- Thermal mode and fan boost ----------
-
+  function setUsbPowerShare() { if (powerController) powerController.setUsbPowerShare() }
+  function setDellTypeCPower(value) { if (powerController) powerController.setTypeCPower(value) }
   function setThermalProfile(name) {
-    if (thermal === null || name === thermal.profile) return
-    dellRun(["profile", name])
+    if (!powerController || pendingThermal !== "") return
+    powerController.setThermalProfile(name)
+    if (queued() && thermal && name !== thermal.profile) pendingThermal = name
   }
-
-  // The slider speaks percent; the kernel takes 0-255 per fan.
-  function setFanBoost(group, percent) {
-    var value = Math.round(Math.max(0, Math.min(100, Number(percent))) / 100 * 255)
-    if (value === Model.groupBoost(fans, group)) return
-    dellRun(["fan-boost", group, String(value)])
+  function setFanBoost(group, percent) { if (powerController) powerController.setFanBoost(group, percent) }
+  function queued() { return !!(powerController && (powerController.busy || powerController.queue.length > 0)) }
+  function clearPending() { pendingProfile = ""; pendingCharge = ""; pendingThermal = "" }
+  function applying(features) {
+    var a = powerController && powerController.busy ? powerController.currentAction : null
+    return !!(a && features.indexOf(a.feature) >= 0)
+  }
+  function sectionHint(feature, pending, features) {
+    if (!featureEnabled(feature)) return "Off in settings"
+    return pending !== "" || applying(features) ? "Applying…" : ""
   }
 
   // ---------- Charge thresholds on the battery bar ----------
 
   function effStart() {
-    return previewStart >= 0 ? previewStart : (dellThresholdsReady ? dellStatus.start : 50)
+    return previewStart >= 0 ? previewStart : (dellThresholdsReady && dellStatus ? dellStatus.start : 50)
   }
 
   function effEnd() {
-    return previewEnd >= 0 ? previewEnd : (dellThresholdsReady ? dellStatus.end : 80)
+    return previewEnd >= 0 ? previewEnd : (dellThresholdsReady && dellStatus ? dellStatus.end : 80)
   }
 
   function applyDellStart(value) {
-    dellRun(["set-start", String(value)])
+    if (powerController) powerController.setThresholds(value, Model.dellClampEnd(effEnd(), value))
   }
 
   function applyDellEnd(value) {
-    dellRun(["set-end", String(value)])
+    if (powerController) powerController.setThresholds(Math.min(effStart(), value - Model.DELL_GAP), value)
   }
 
   function thresholdTickText() {
@@ -355,22 +281,13 @@ Panel {
   // is active and the battery is charging towards it.
   function timeToLimitText() {
     if (!dellThresholdsReady || dellStatus === null || dellStatus.mode !== "Custom") return ""
-    var rate = powerChain && powerChain.batteryW !== null
-      ? powerChain.batteryW
-      : parseFloat(batteryInfo.rate || "")
-    return Model.timeToThresholdText(dellStatus.end, batteryFraction, parseFloat(batteryInfo.size || ""), rate)
+    var rate = powerChain && powerChain.batteryW !== null ? powerChain.batteryW
+      : (Presentation.finite(basicBattery.rateW) ? basicBattery.rateW : parseFloat(batteryInfo.rate || ""))
+    var size = Presentation.finite(basicBattery.energyFullWh) ? basicBattery.energyFullWh : parseFloat(batteryInfo.size || "")
+    return Model.timeToThresholdText(dellStatus.end, batteryFraction, size, rate)
   }
 
   // ---------- Power flow chain ----------
-
-  function refreshPowerChain() {
-    if (!powerChainProc.running) powerChainProc.running = true
-  }
-
-  function updatePowerChain(raw) {
-    var parsed = Model.parsePowerChain(raw)
-    if (parsed) powerChain = parsed
-  }
 
   function sourceIcon() {
     if (!powerChain) return "\uf1e6"
@@ -417,137 +334,66 @@ Panel {
     return "none"
   }
 
-  IpcHandler {
-    target: "io.github.nipsen.dell-power"
+  // ---------- Collapsed-row summaries ----------
 
-    function open() { root.open() }
-    function close() { root.close() }
-    function show() { root.open() }
-    function hide() { root.close() }
-    function toggle() { root.toggle() }
-    function togglePercentage() { root.togglePercentage() }
+  function sensorSummary() {
+    var hottest = null
+    for (var i = 0; i < temps.length; i++) if (temps[i] && (hottest === null || temps[i].c > hottest)) hottest = temps[i].c
+    var spinning = fans.filter(function(f) { return f && f.rpm !== null && f.rpm !== undefined })
+    var parts = []
+    if (hottest !== null) parts.push(hottest + "°C")
+    if (spinning.length) parts.push(Math.max.apply(null, spinning.map(function(f) { return f.rpm })) + " rpm")
+    return parts.join(" · ")
+  }
+  function boostSummary() {
+    var parts = []
+    var cpu = Model.groupBoost(controlFans, "cpu"), gpu = Model.groupBoost(controlFans, "gpu")
+    if (cpu !== null) parts.push("CPU " + Model.boostPercent(cpu) + "%")
+    if (gpu !== null) parts.push("GPU " + Model.boostPercent(gpu) + "%")
+    return parts.join(" · ")
+  }
+  function policySummary() {
+    if (!powerController || !policiesOn) return "Off"
+    return powerController.ownership.conflict || !powerController.ownership.known ? "Paused" : "On"
   }
 
   onOpenedChanged: {
+    if (powerController) powerController.setPanelOpen(panelToken, opened)
+    if (!opened) { featuresOpen = false; previewStart = -1; previewEnd = -1; draggingStart = false; draggingStop = false }
     if (opened) {
-      if (!batteryPresent) {
-        close()
-        return
-      }
-
+      if (!batteryPresent) { close(); return }
       refresh()
-      refreshDell()
-      refreshPowerChain()
-      if (dellStatus === null || !dellWmiReady) dellRootRefreshProc.running = true
       var idx = profiles.indexOf(activeProfile)
       profileIndex = idx >= 0 ? idx : 0
       cursorActive = false
     }
   }
+  Connections {
+    target: root.powerController
+    function onProfilesChanged() { root.profileIndex = Model.clampIndex(root.profileIndex, root.profiles.length) }
+    function onActiveProfileChanged() {
+      if (root.activeProfile === root.pendingProfile) root.pendingProfile = ""
+      if (!root.cursorActive) {
+        var idx = root.profiles.indexOf(root.activeProfile)
+        if (idx >= 0) root.profileIndex = idx
+      }
+    }
+    function onDellStatusChanged() {
+      if (root.dellStatus && root.dellStatus.mode === root.pendingCharge) root.pendingCharge = ""
+      if (root.thermal && root.thermal.profile === root.pendingThermal) root.pendingThermal = ""
+    }
+    function onBusyChanged() { if (!root.powerController.busy && !root.powerController.queue.length) pendingGrace.restart() }
+    function onErrorChanged() { if (root.powerController.error) root.clearPending() }
+  }
+  // Settles pending choices that the verified state did not confirm, such as
+  // a cancelled authorization or a firmware refusal.
+  Timer { id: pendingGrace; interval: 2000; onTriggered: if (!root.queued()) root.clearPending() }
 
   onBatteryPresentChanged: if (!batteryPresent) close()
 
   visible: batteryPresent
   implicitWidth: batteryPresent ? button.implicitWidth : 0
   implicitHeight: batteryPresent ? button.implicitHeight : 0
-
-  Process {
-    id: batteryProc
-    clearEnvironment: true
-    environment: root.procEnv
-    command: ["/usr/bin/timeout", "-k", "5", "15", "/usr/share/omarchy/bin/omarchy-battery-status", "--shell"]
-    stdout: CappedCollector { proc: batteryProc; onFinished: t => root.updateKeyValue(t, "battery") }
-  }
-
-  Process {
-    id: profilesProc
-    clearEnvironment: true
-    environment: root.procEnv
-    command: ["/usr/bin/timeout", "-k", "5", "15", "/usr/share/omarchy/bin/omarchy-powerprofiles-list", "--active-state"]
-    stdout: CappedCollector { proc: profilesProc; onFinished: t => root.updateProfiles(t) }
-  }
-
-  Process {
-    id: systemProc
-    clearEnvironment: true
-    environment: root.procEnv
-    command: ["/usr/bin/timeout", "-k", "5", "15", "/usr/share/omarchy/bin/omarchy-system-stats"]
-    stdout: CappedCollector { proc: systemProc; onFinished: t => root.updateKeyValue(t, "system") }
-  }
-
-  Process {
-    id: actionProc
-    clearEnvironment: true
-    environment: root.procEnv
-    onExited: root.refresh()
-  }
-
-  Process {
-    id: dellProc
-    clearEnvironment: true
-    environment: root.procEnv
-    // The timeout wrapper keeps the probe observable: with the helper not
-    // installed the command never starts (no exit, no stream end) and
-    // dellProbed would stay false forever — timeout exits 127 instead.
-    command: ["/usr/bin/timeout", "-k", "5", "20", root.helperPath, "status"]
-    onExited: root.dellProbed = true
-    stdout: CappedCollector {
-      proc: dellProc
-      onFinished: t => {
-        root.dellProbed = true
-        root.updateDellStatus(t)
-      }
-    }
-  }
-
-  Process {
-    id: dellActionProc
-    clearEnvironment: true
-    environment: root.procEnv
-    // The decision is made in onDellActionFinished, fired when the stdout
-    // stream ends (waitForEnd). onExited may fire BEFORE the output is
-    // delivered: a plain onExited would read an empty output and wrongly
-    // trigger the pkexec fallback. The timer is a safety net if the stream
-    // never ends (process failed to start).
-    onExited: dellActionDoneTimer.start()
-    stdout: CappedCollector {
-      proc: dellActionProc
-      onFinished: t => {
-        root.dellActionOutput = t
-        root.onDellActionFinished()
-      }
-    }
-    stderr: CappedCollector { proc: dellActionProc; onFinished: t => root.dellActionError = t }
-  }
-
-  Timer {
-    id: dellActionDoneTimer
-    interval: 150
-    onTriggered: root.onDellActionFinished()
-  }
-
-  Process {
-    id: powerChainProc
-    clearEnvironment: true
-    environment: root.procEnv
-    // The RAPL counters are root-only by kernel default, so the sampling goes
-    // through the allowlisted helper as root (silent thanks to the sudoers
-    // rule). No helper / no rule → the process fails and the power-flow
-    // section simply stays hidden.
-    command: ["/usr/bin/timeout", "-k", "5", "20", "/usr/bin/sudo", "-n", root.helperPath, "power-chain"]
-    stdout: CappedCollector { proc: powerChainProc; onFinished: t => root.updatePowerChain(t) }
-  }
-
-  // Silent self-heal: if the WMI cache is stale (null values written
-  // before dell-wmi-sysman was ready at boot), a root status
-  // via sudo -n (NOPASSWD) refreshes it without a password prompt.
-  Process {
-    id: dellRootRefreshProc
-    clearEnvironment: true
-    environment: root.procEnv
-    command: ["/usr/bin/timeout", "-k", "5", "20", "/usr/bin/sudo", "-n", root.helperPath, "status"]
-    stdout: CappedCollector { proc: dellRootRefreshProc; onFinished: t => root.updateDellStatus(t) }
-  }
 
   Process {
     id: setupCopyProc
@@ -567,8 +413,6 @@ Panel {
     interval: 1500
     onTriggered: root.setupCopied = false
   }
-
-  Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: { root.refresh(); root.refreshDell(); root.refreshPowerChain() } }
 
   // Rotate the status phrase while the panel is open and we're in a
   // rotating state (charging or on battery). The text swap is wrapped in a
@@ -631,32 +475,86 @@ Panel {
 
   KeyboardPanel {
     id: panel
+    objectName: "powerPopup"
     anchorItem: button
     owner: root
     bar: root.bar
     open: root.opened && root.batteryPresent
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight)
+    // Capped so an expanded settings page scrolls inside a panel of
+    // comfortable height instead of running the full height of the screen.
+    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(720))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onMoveRequested: function(dx, dy) {
+        if (root.featuresOpen) {
+          panelScroll.contentY = Math.max(0, Math.min(panelScroll.contentHeight - panelScroll.height, panelScroll.contentY + (dy || dx) * Style.space(36)))
+          return
+        }
         if (!root.cursorActive) { root.cursorActive = true; return }
         if (dx !== 0) root.selectProfileByDelta(dx)
         else if (dy !== 0) root.selectProfileByDelta(dy)
       }
-      onActivateRequested: if (root.cursorActive) root.activateSelectedProfile()
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onActivateRequested: if (!root.featuresOpen && root.cursorActive) root.activateSelectedProfile()
+      onCloseRequested: if (root.featuresOpen) root.featuresOpen = false; else root.close()
+      onTabRequested: function(direction) {
+        if (!root.featuresOpen) { root.switchPanel(direction); return }
+        var focused = (keyCatcher.Window.window ? keyCatcher.Window.window.activeFocusItem : null) || keyCatcher
+        var next = focused.nextItemInFocusChain(direction > 0)
+        if (next) next.forceActiveFocus(Qt.TabFocusReason)
+      }
+      onTextKey: function(t) { if (t === "f" || t === "F") root.featuresOpen = !root.featuresOpen }
 
+      Connections {
+        target: keyCatcher.Window.window
+        function onActiveFocusItemChanged() {
+          if (!root.featuresOpen || !target.activeFocusItem) return
+          var item = target.activeFocusItem
+          var pos = item.mapToItem(column, 0, 0)
+          if (pos.y < panelScroll.contentY) panelScroll.contentY = pos.y
+          else if (pos.y + item.height > panelScroll.contentY + panelScroll.height)
+            panelScroll.contentY = pos.y + item.height - panelScroll.height
+          panelScroll.clampScroll()
+        }
+      }
+
+      Flickable {
+        id: panelScroll
+        objectName: "panelScroll"
+        anchors.fill: parent
+        clip: true
+        contentWidth: width
+        contentHeight: column.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        readonly property bool scrollable: contentHeight > height + 1
+        function clampScroll() { contentY = Math.max(0, Math.min(contentY, Math.max(0, contentHeight - height))) }
+        onContentHeightChanged: clampScroll()
+        onHeightChanged: clampScroll()
       Column {
         id: column
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
+        // Leave the scroll indicator its own gutter instead of drawing over controls.
+        anchors.rightMargin: panelScroll.scrollable ? Style.space(10) : 0
         spacing: Style.space(14)
+
+        FeaturesPage {
+          width: parent.width
+          visible: root.featuresOpen
+          objectName: "settingsPage"
+          controller: root.powerController
+          bar: root.bar
+          onBack: root.featuresOpen = false
+        }
+        Column {
+          id: mainContent
+          width: parent.width
+          spacing: Style.space(14)
+          visible: !root.featuresOpen
 
         // ---------- Hero: battery icon · title/status · percentage ----------
         Item {
@@ -800,8 +698,11 @@ Panel {
 
           MouseArea {
             id: barMouse
+            objectName: "thresholdMouse"
             anchors.fill: parent
             hoverEnabled: true
+            // Keep the pointer while dragging a marker inside the scrollable panel.
+            preventStealing: root.draggingStart || root.draggingStop
             property string hoverText: ""
             property string hoverTick: ""
 
@@ -843,10 +744,10 @@ Panel {
               }
             }
 
-            cursorShape: root.dellThresholdsReady && tickNear(mouseX) !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+            cursorShape: root.dellThresholdsReady && root.featureEnabled("thresholds") && root.featureEnabled("charging") && tickNear(mouseX) !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
 
             onPressed: function(mouse) {
-              if (root.dellBusy) return
+              if (root.dellBusy || !root.featureEnabled("thresholds") || !root.featureEnabled("charging")) return
               var t = tickNear(mouse.x)
               if (t === "end") {
                 root.draggingStop = true
@@ -876,17 +777,22 @@ Panel {
                 root.draggingStop = false
                 var v = root.previewEnd
                 root.previewEnd = -1
-                if (v !== root.dellStatus.end) root.applyDellEnd(v)
+                if (root.dellStatus && (v !== root.dellStatus.end || root.dellStatus.mode !== "Custom")) root.applyDellEnd(v)
               }
               if (root.draggingStart) {
                 root.draggingStart = false
                 var s = root.previewStart
                 root.previewStart = -1
-                if (s !== root.dellStatus.start) root.applyDellStart(s)
+                if (root.dellStatus && (s !== root.dellStatus.start || root.dellStatus.mode !== "Custom")) root.applyDellStart(s)
               }
               updateHover()
             }
 
+            onCanceled: {
+              root.draggingStart = false; root.draggingStop = false
+              root.previewStart = -1; root.previewEnd = -1
+              updateHover()
+            }
             onHoveredChanged: updateHover()
           }
 
@@ -904,7 +810,8 @@ Panel {
               var cx = barTrack.width * tickPct / 100
               return Math.max(0, Math.min(parent.width - width, cx - width / 2))
             }
-            width: thresholdTipLabel.implicitWidth + 14
+            // Wraps instead of running past the panel edge on the long inactive hint.
+            width: Math.min(parent.width, thresholdTipLabel.implicitWidth + 14)
             height: thresholdTipLabel.implicitHeight + 8
             radius: Math.max(2, Style.cornerRadius)
             color: Color.tooltip.background
@@ -914,6 +821,8 @@ Panel {
             Text {
               id: thresholdTipLabel
               anchors.centerIn: parent
+              width: Math.min(implicitWidth, thresholdTip.parent.width - 14)
+              wrapMode: Text.WordWrap
               textFormat: Text.PlainText
               text: barMouse.hoverText
               color: Color.tooltip.text
@@ -948,39 +857,46 @@ Panel {
           Column {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
+            // Energy stored right now; full and design capacity live in
+            // Battery Details.
             InfoPair {
-              label: "Battery size"
-              value: (root.batteryInfo.size || "") +
-                (root.powerChain && root.powerChain.nominalWh !== null
-                  ? " / " + root.powerChain.nominalWh + "Wh"
-                  : "")
+              objectName: "capacityStat"
+              label: "Current capacity"
+              value: Presentation.energyText(UPower.displayDevice && UPower.displayDevice.isPresent ? UPower.displayDevice.energy : null)
             }
-            InfoPair { label: "Charge cycles"; value: root.batteryInfo.cycles || "—" }
+            InfoPair { label: "Charge cycles"; value: root.basicBattery.cycleCount !== null && root.basicBattery.cycleCount !== undefined ? String(Math.round(root.basicBattery.cycleCount)) : (root.batteryInfo.cycles || "—") }
           }
 
           Column {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
+            // Any pause names what limits the charge: the Custom thresholds,
+            // or the mode itself when another mode stopped charging.
             InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit"
+              objectName: "limitStat"
+              label: root.chargingPaused ? "Charge limit"
                 : (root.discharging ? "Time left"
                   : (root.charging && root.timeToLimitText() !== "" ? "Time to limit" : "Time to full"))
-              value: root.chargeThresholdActive
-                ? (root.dellThresholdsReady
+              value: root.chargingPaused
+                ? (root.chargeThresholdActive && root.dellThresholdsReady && root.dellStatus
                   ? (root.dellStatus.start + "-" + root.dellStatus.end + "%")
-                  : (root.batteryInfo.threshold || "-"))
+                  : (root.dellStatus && root.dellStatus.mode
+                    ? (root.dellStatus.mode === "PrimAcUse" ? "AC" : root.dellStatus.mode)
+                    : (root.batteryInfo.threshold || "-")))
                 : (root.batteryFlowIdle ? "-"
                   : (root.charging && root.timeToLimitText() !== ""
                     ? root.timeToLimitText()
                     : (root.batteryInfo.time || "—")))
             }
+            // An active Custom limit holds the charge; any other pause (another
+            // mode's ceiling, the firmware) is reported as paused.
             InfoPair {
-              label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
-              value: root.chargeThresholdActive ? "Holding"
+              label: root.chargingPaused ? "Battery state" : (root.discharging ? "Discharging" : "Charging")
+              value: root.chargingPaused ? (root.chargeThresholdActive ? "Holding" : "Paused")
                 : (root.batteryFull ? "-"
                   : (root.powerChain && root.powerChain.batteryW !== null
                     ? root.signedWatt(root.powerChain.batteryW)
-                    : (root.batteryInfo.rate || "")))
+                    : (Presentation.rateText(root.basicBattery.rateW) || root.batteryInfo.rate || "")))
             }
           }
         }
@@ -988,16 +904,17 @@ Panel {
         // ---------- Power profile picker ----------
         PanelSeparator {
           foreground: root.bar.foreground
+          visible: root.profilesReady
         }
 
         Column {
           width: parent.width
           spacing: Style.space(10)
+          visible: root.profilesReady
 
-          PanelSectionHeader {
+          SectionHeader {
             text: "POWER PROFILE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            hint: root.sectionHint("systemProfiles", root.pendingProfile, ["systemProfiles"])
           }
 
           Row {
@@ -1009,22 +926,27 @@ Panel {
               ? (width - spacing * (root.profiles.length - 1)) / root.profiles.length
               : 0
 
+            // Counted rather than listed: delegates keep their place and hover
+            // state when the controller republishes the same profiles.
             Repeater {
-              model: root.profiles
+              model: root.profiles.length
               Button {
-                required property var modelData
                 required property int index
+                readonly property string modelData: root.profiles[index] || ""
+                objectName: "profile-" + modelData
                 width: profileRow.cellWidth
-                iconText: root.profileIcon(String(modelData))
+                iconText: root.profileIcon(modelData)
                 iconSize: Style.font.title
-                text: String(modelData).charAt(0).toUpperCase() + String(modelData).slice(1)
+                text: modelData.charAt(0).toUpperCase() + modelData.slice(1)
                 fontSize: Style.font.bodySmall
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 horizontalPadding: Style.spacing.controlPaddingX
                 verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
                 bordered: true
-                active: root.activeProfile === modelData
+                enabled: root.featureEnabled("systemProfiles")
+                opacity: enabled ? 1 : 0.5
+                active: root.shownProfile === modelData
                 hasCursor: root.cursorActive && root.profileIndex === index
                 onClicked: root.setProfile(modelData)
                 onHovered: function(h) {
@@ -1035,121 +957,6 @@ Panel {
                 }
               }
             }
-          }
-        }
-
-        // ---------- Thermal mode (firmware modes power-profiles-daemon cannot reach) ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-          visible: root.thermalReady
-        }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(10)
-          visible: root.thermalReady
-
-          PanelSectionHeader {
-            text: root.brand.toUpperCase() + " THERMAL MODE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          Grid {
-            id: thermalGrid
-            width: parent.width
-            columns: root.thermalModes.length > 6 ? 4 : 3
-            spacing: Style.space(6)
-
-            readonly property real cellWidth: (width - spacing * (columns - 1)) / columns
-
-            Repeater {
-              model: root.thermalModes
-              Button {
-                required property var modelData
-                width: thermalGrid.cellWidth
-                iconText: Model.thermalIcon(String(modelData))
-                iconSize: Style.font.title
-                text: Model.thermalLabel(String(modelData))
-                fontSize: Style.font.bodySmall
-                foreground: root.bar.foreground
-                fontFamily: root.bar.fontFamily
-                horizontalPadding: Style.spacing.controlPaddingX
-                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
-                bordered: true
-                enabled: !root.dellBusy
-                active: root.thermal !== null && root.thermal.profile === modelData
-                tooltipText: Model.thermalTip(String(modelData))
-                onClicked: root.setThermalProfile(String(modelData))
-              }
-            }
-          }
-        }
-
-        // ---------- Fans and temperatures ----------
-        PanelSeparator {
-          foreground: root.bar.foreground
-          visible: root.sensorsReady
-        }
-
-        Column {
-          width: parent.width
-          spacing: Style.space(8)
-          visible: root.sensorsReady
-
-          PanelSectionHeader {
-            text: "FANS & TEMPERATURES"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-          }
-
-          // Counted rather than listed: the status poll hands a new array every
-          // few seconds, and a listed model would rebuild (and re-animate) every row.
-          Repeater {
-            model: root.fans.length
-            FanRow {
-              required property int index
-              width: parent.width
-              fan: root.fans[index] || null
-              name: root.fanNames[index] || ""
-            }
-          }
-
-          Row {
-            id: tempRow
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.temps.length > 0
-
-            Repeater {
-              model: root.temps.length
-              TempTile {
-                required property int index
-                width: (tempRow.width - tempRow.spacing * Math.max(0, root.temps.length - 1)) / Math.max(1, root.temps.length)
-                reading: root.temps[index] || null
-              }
-            }
-          }
-
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-            visible: root.fanBoostAvailable && root.thermal !== null && root.thermal.profile === "custom"
-
-            BoostSlider { group: "cpu"; title: "CPU fans boost" }
-            BoostSlider { group: "gpu"; title: "GPU fans boost" }
-          }
-
-          Text {
-            visible: root.fanBoostAvailable && root.thermalModes.indexOf("custom") >= 0
-              && root.thermal !== null && root.thermal.profile !== "custom"
-            width: parent.width
-            wrapMode: Text.WordWrap
-            textFormat: Text.PlainText
-            text: "Pick Custom above to set the fan boost."
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
           }
         }
 
@@ -1174,7 +981,9 @@ Panel {
             width: parent.width
             wrapMode: Text.WordWrap
             textFormat: Text.PlainText
-            text: "Charge modes, thresholds, USB options and power flow need the system helper — run this once in a terminal:"
+            text: powerController && powerController.helperOutdated
+              ? "The system helper needs an update for this version — run this once in a terminal:"
+              : "Charge modes, thresholds, USB options and power flow need the system helper — run this once in a terminal:"
             color: Qt.darker(root.bar.foreground, 1.4)
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.caption
@@ -1218,14 +1027,15 @@ Panel {
         }
 
         Column {
+          objectName: "flowSection"
           width: parent.width
           spacing: Style.space(10)
           visible: root.powerChain !== null
 
-          PanelSectionHeader {
+          // Adapter, "Other" and the totals are inferred, so the section says so.
+          SectionHeader {
             text: "POWER FLOW"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            hint: "Estimates"
           }
 
           Row {
@@ -1258,17 +1068,18 @@ Panel {
             FlowNode {
               id: componentsNode
               width: flowRow.nodeWidth
-              iconText: "\uf2db"
+              iconText: ""
               title: "Components"
               value: root.powerChain ? root.plainWatt(root.powerChain.componentsW) : "—"
               collapsible: true
               // RAM only where the CPU reports it (RAPL dram); elsewhere it is part of "Other".
+              // Without an iGPU domain the package total cannot be split.
               rows: {
                 var list = [
                   {
-                    label: "CPU",
-                    value: root.powerChain && root.powerChain.cpuW !== null && root.powerChain.igpuW !== null
-                      ? root.plainWatt(root.powerChain.cpuW - root.powerChain.igpuW)
+                    label: root.powerChain && root.powerChain.igpuW !== null ? "CPU" : "CPU package",
+                    value: root.powerChain && root.powerChain.cpuW !== null
+                      ? root.plainWatt(root.powerChain.cpuW - (root.powerChain.igpuW === null ? 0 : root.powerChain.igpuW))
                       : "—"
                   },
                   { label: "iGPU", value: root.powerChain ? root.plainWatt(root.powerChain.igpuW) : "—" }
@@ -1289,7 +1100,7 @@ Panel {
             FlowNode {
               id: batteryNode
               width: flowRow.nodeWidth
-              iconText: "\uf241"
+              iconText: ""
               title: "Battery"
               value: root.powerChain ? root.signedWatt(root.powerChain.batteryW) : "—"
               sub: root.batterySubText()
@@ -1308,10 +1119,9 @@ Panel {
           spacing: Style.space(10)
           visible: root.dellWmiReady
 
-          PanelSectionHeader {
+          SectionHeader {
             text: "CHARGE MODE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
+            hint: root.sectionHint("charging", root.pendingCharge, ["charging", "thresholds"])
           }
 
           Row {
@@ -1319,30 +1129,49 @@ Panel {
             width: parent.width
             spacing: Style.space(6)
 
-            readonly property real cellWidth: Model.DELL_MODES.length > 0
-              ? (width - spacing * (Model.DELL_MODES.length - 1)) / Model.DELL_MODES.length
+            readonly property real cellWidth: root.chargeModes.length > 0
+              ? (width - spacing * (root.chargeModes.length - 1)) / root.chargeModes.length
               : 0
 
             Repeater {
-              model: Model.DELL_MODES
+              model: root.chargeModes.length
               Button {
-                required property var modelData
+                required property int index
+                readonly property string modelData: root.chargeModes[index] || ""
+                objectName: "charge-" + modelData
                 width: modeRow.cellWidth
-                text: String(modelData) === "PrimAcUse" ? "AC" : String(modelData)
+                text: modelData === "PrimAcUse" ? "AC" : modelData
                 fontSize: Style.font.bodySmall
                 foreground: root.bar.foreground
                 fontFamily: root.bar.fontFamily
                 horizontalPadding: Style.spacing.controlPaddingX
                 verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
                 bordered: true
-                enabled: !root.dellBusy
-                active: root.dellStatus !== null && root.dellStatus.mode === modelData
-                tooltipText: Model.DELL_MODE_INFO[String(modelData)] || ""
-                onClicked: root.setDellMode(String(modelData))
+                enabled: root.featureEnabled("charging")
+                opacity: enabled ? 1 : 0.5
+                active: root.chargeMode === modelData
+                tooltipText: Model.DELL_MODE_INFO[modelData] || ""
+                onClicked: root.chooseChargeMode(modelData)
               }
-             }
-           }
-         }
+            }
+          }
+
+          // Primarily AC keeps what it replaced, so it can be undone here.
+          Button {
+            objectName: "restoreProtection"
+            width: parent.width
+            visible: !!(root.powerController && root.powerController.protectionSnapshot)
+            iconText: ""
+            text: Presentation.restoreText(root.powerController && root.powerController.protectionSnapshot
+              ? root.powerController.protectionSnapshot.before : null)
+            fontSize: Style.font.bodySmall
+            enabled: !root.dellBusy && root.powerController && root.powerController.helperCompatible
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            bordered: true
+            onClicked: root.powerController.restoreProtection()
+          }
+        }
 
         // ---------- Dell USB options ----------
         PanelSeparator {
@@ -1351,6 +1180,7 @@ Panel {
         }
 
         Column {
+          objectName: "usbSection"
           width: parent.width
           spacing: Style.space(10)
           visible: root.usbPowerShareReady || root.typeCPowerReady
@@ -1370,7 +1200,7 @@ Panel {
               label: "USB PowerShare"
               width: parent.width
               isOn: root.dellStatus !== null && root.dellStatus.usbPowerShare === "Enabled"
-              busy: root.dellBusy
+              busy: root.dellBusy || !root.featureEnabled("usb")
               tooltipText: "Keeps the USB-A port powered while the laptop is off or asleep (to charge a phone)"
               onTriggered: root.setUsbPowerShare()
             }
@@ -1388,7 +1218,7 @@ Panel {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               bordered: true
-              enabled: !root.dellBusy
+              enabled: !root.dellBusy && root.featureEnabled("usb")
               active: root.dellStatus !== null && root.dellStatus.typeCPower === "7.5W"
               tooltipText: "Max power delivered by the USB-C port to connected devices"
               onClicked: root.setDellTypeCPower("7.5W")
@@ -1401,15 +1231,252 @@ Panel {
               foreground: root.bar.foreground
               fontFamily: root.bar.fontFamily
               bordered: true
-              enabled: !root.dellBusy
+              enabled: !root.dellBusy && root.featureEnabled("usb")
               active: root.dellStatus !== null && root.dellStatus.typeCPower === "15W"
               tooltipText: "Max power delivered by the USB-C port to connected devices"
               onClicked: root.setDellTypeCPower("15W")
             }
           }
         }
+
+        // ---------- Extensions: one line each until opened ----------
+        PanelSeparator { foreground: root.bar.foreground }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(2)
+
+        // Thermal mode (firmware modes power-profiles-daemon cannot reach)
+        Section {
+          objectName: "thermalSection"
+          width: parent.width
+          bar: root.bar
+          title: root.brand + " Thermal Mode"
+          summary: root.featureEnabled("thermal")
+            ? Model.thermalLabel(root.thermalMode) + (root.profilesLinked && root.profilesReady ? " · Linked" : "")
+            : "Off in settings"
+          visible: root.thermalReady
+
+          ChoiceFlow {
+            id: thermalGrid
+            columns: 2
+            count: root.thermalModes.length
+
+            Repeater {
+              model: root.thermalModes.length
+              Button {
+                required property int index
+                readonly property string modelData: root.thermalModes[index] || ""
+                width: thermalGrid.cellWidth(index)
+                iconText: Model.thermalIcon(String(modelData))
+                iconSize: Style.font.title
+                text: Model.thermalLabel(String(modelData))
+                fontSize: Style.font.bodySmall
+                foreground: root.bar.foreground
+                fontFamily: root.bar.fontFamily
+                horizontalPadding: Style.spacing.controlPaddingX
+                verticalPadding: Style.spacing.controlPaddingY + Style.space(2)
+                bordered: true
+                enabled: root.featureEnabled("thermal")
+                opacity: enabled ? 1 : 0.5
+                active: root.thermalMode === modelData
+                tooltipText: Model.thermalTip(String(modelData))
+                onClicked: root.setThermalProfile(String(modelData))
+              }
+            }
+          }
+          Caption {
+            visible: root.profilesLinked && root.profilesReady
+            text: "Linked: also sets the matching power profile."
+          }
+        }
+
+        // ---------- Fans and temperatures ----------
+        // Opt-in from Settings, so it opens showing its readings.
+        Section {
+          width: parent.width
+          objectName: "sensorSection"
+          bar: root.bar
+          title: "Fans & Temperatures"
+          summary: root.sensorSummary()
+          expanded: true
+          visible: root.sensorsReady
+
+          // Counted rather than listed: the status poll hands a new array every
+          // few seconds, and a listed model would rebuild (and re-animate) every row.
+          Repeater {
+            model: root.fans.length
+            FanRow {
+              required property int index
+              width: parent.width
+              fan: root.fans[index] || null
+              name: root.fanNames[index] || ""
+              visible: !!(fan && fan.rpm !== null && fan.rpm !== undefined)
+            }
+          }
+
+          Row {
+            id: tempRow
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.temps.length > 0
+
+            Repeater {
+              model: root.temps.length
+              TempTile {
+                required property int index
+                width: (tempRow.width - tempRow.spacing * Math.max(0, root.temps.length - 1)) / Math.max(1, root.temps.length)
+                reading: root.temps[index] || null
+              }
+            }
+          }
+        }
+
+        Section {
+          width: parent.width
+          objectName: "boostSection"
+          bar: root.bar
+          title: "Fan Boost"
+          summary: root.boostSummary()
+          visible: root.fanBoostAvailable
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.fanBoostAvailable && (root.thermal === null || root.thermalModes.indexOf("custom") < 0 || root.thermal.profile === "custom")
+
+            BoostSlider { group: "cpu"; title: "CPU fans boost" }
+            BoostSlider { group: "gpu"; title: "GPU fans boost" }
+          }
+
+          Caption {
+            visible: root.fanBoostAvailable && root.thermalModes.indexOf("custom") >= 0
+              && root.thermal !== null && root.thermal.profile !== "custom"
+            text: "Pick Custom above to set the fan boost."
+          }
+        }
+
+        // Opt-in from Settings, so it opens showing its readings.
+        Section {
+          objectName: "detailsSection"
+          width: parent.width
+          bar: root.bar
+          title: "Battery Details"
+          summary: Presentation.detailsSummary(root.basicBattery)
+          expanded: true
+          visible: root.featureShown("batteryDetails")
+          InfoPair { label: "Firmware health"; value: Presentation.healthText(root.basicBattery) }
+          InfoPair { label: "Capacity health"; value: Presentation.capacityHealthText(root.basicBattery) }
+          InfoPair { label: "Full capacity"; value: Presentation.capacityText(root.basicBattery) }
+          InfoPair { label: "Design capacity"; value: Presentation.designText(root.basicBattery) }
+          InfoPair { label: "Temperature"; value: Presentation.numberText(root.basicBattery.temperatureC, "°C", 1) }
+          Caption {
+            visible: root.basicBattery.energyEstimated === true || Presentation.finite(root.basicBattery.capacityHealthPercent)
+            text: "Estimate derived from charge readings"
+          }
+        }
+
+        // Policy status stays visible here; configuring it happens in Settings.
+        Section {
+          objectName: "policyRow"
+          width: parent.width
+          bar: root.bar
+          title: "Power Saving"
+          summary: root.policySummary()
+          navigates: true
+          visible: root.policiesShown
+          onActivated: root.featuresOpen = true
+        }
+        Caption {
+          visible: root.policiesShown && root.policiesOn
+          leftPadding: Style.spacing.controlPaddingX
+          width: parent.width
+          text: root.powerController
+            ? (root.powerController.ownership.conflict ? root.powerController.ownership.reason : root.powerController.policyReason)
+            : "Controller loading"
+          wrapMode: Text.WordWrap
+          elide: Text.ElideNone
+        }
+
+        Section {
+          objectName: "openSettings"
+          width: parent.width
+          bar: root.bar
+          title: "Settings"
+          summary: "F"
+          navigates: true
+          onActivated: root.featuresOpen = true
+        }
+        }
+        }
+      }
+      }
+
+      // Thin position indicator, shown only when the content is taller than the panel.
+      Rectangle {
+        visible: panelScroll.scrollable
+        anchors.right: parent.right
+        width: Style.space(3)
+        radius: width / 2
+        y: panelScroll.height * panelScroll.visibleArea.yPosition
+        height: Math.max(Style.space(24), panelScroll.height * panelScroll.visibleArea.heightRatio)
+        color: root.bar.foreground
+        opacity: panelScroll.moving ? 0.5 : 0.25
+        Behavior on opacity { NumberAnimation { duration: 150 } }
       }
     }
+  }
+
+  // Section label with an optional muted status on the right ("Applying…",
+  // "Off in settings") so pending and disabled states never move controls.
+  component SectionHeader: Item {
+    property string text: ""
+    property string hint: ""
+    width: parent.width
+    implicitHeight: headerLabel.implicitHeight
+    PanelSectionHeader {
+      id: headerLabel
+      text: parent.text
+      foreground: root.bar.foreground
+      fontFamily: root.bar.fontFamily
+    }
+    Text {
+      anchors.right: parent.right
+      anchors.baseline: headerLabel.baseline
+      textFormat: Text.PlainText
+      text: parent.hint
+      color: root.bar.foreground
+      opacity: 0.55
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+    }
+  }
+
+  // Rows of equal choices where a short last row shares the full width, so
+  // an odd count never leaves one chip orphaned beside an empty cell.
+  component ChoiceFlow: Flow {
+    property int columns: 2
+    property int count: 0
+    readonly property int lastRowStart: count - (count % columns === 0 ? columns : count % columns)
+    width: parent.width
+    spacing: Style.space(6)
+    // Whole pixels keep the Flow from wrapping early; the last cell in each
+    // row takes the remainder so every row ends flush.
+    function cellWidth(i) {
+      var n = i >= lastRowStart ? count - lastRowStart : columns
+      var base = Math.floor((width - spacing * (n - 1)) / n)
+      var col = i >= lastRowStart ? i - lastRowStart : i % columns
+      return col === n - 1 ? width - (n - 1) * (base + spacing) : base
+    }
+  }
+
+  component Caption: Text {
+    width: parent.width
+    elide: Text.ElideRight
+    textFormat: Text.PlainText
+    color: root.bar.foreground
+    opacity: 0.6
+    font.family: root.bar.fontFamily
+    font.pixelSize: Style.font.caption
   }
 
   // One fan: its name, a bar of its speed against its maximum, and its rpm.
@@ -1513,7 +1580,7 @@ Panel {
     id: boostBox
     property string group: ""
     property string title: ""
-    readonly property var boost: Model.groupBoost(root.fans, group)
+    readonly property var boost: Model.groupBoost(root.controlFans, group)
 
     width: parent.width
     spacing: Style.space(4)
@@ -1533,7 +1600,7 @@ Panel {
       step: 5
       integer: true
       value: Model.boostPercent(boostBox.boost)
-      enabled: !root.dellBusy
+      enabled: !root.dellBusy && root.featureEnabled("fanBoost")
       onReleased: function(v) { root.setFanBoost(boostBox.group, v) }
     }
   }
@@ -1553,28 +1620,6 @@ Panel {
     enabled: !busy
     active: isOn
     onClicked: triggered()
-  }
-
-  // StdioCollector with a live byte ceiling: past the cap the process is
-  // killed and the consumer receives an empty payload (parses to null /
-  // keeps last known data), so a runaway binary cannot exhaust shell memory
-  // through routine refreshes.
-  component CappedCollector: StdioCollector {
-    id: capped
-    required property Process proc
-    property int cap: 262144
-    property bool overflow: false
-    waitForEnd: true
-    signal finished(string text)
-    onDataChanged: if (!overflow && data.length > cap) { overflow = true; proc.signal(9) }
-    onStreamFinished: {
-      // overflow implies data flowed, which guarantees the stream ends (we
-      // kill the process), so resetting here is safe.
-      var wasOverflow = overflow
-      overflow = false
-      if (wasOverflow) finished("")
-      else finished(text)
-    }
   }
 
   component FlowArrow: Item {

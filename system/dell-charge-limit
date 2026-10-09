@@ -1,604 +1,73 @@
-#!/bin/bash
-# dell-charge-limit — privileged charge/power controller for the
-# Omarchy widget io.github.nipsen.dell-power.
-#
-# All operations are validated against hardcoded allowlists. This script
-# never touches anything but:
-#   /sys/class/power_supply/BAT0/charge_control_{start,end}_threshold
-#   /sys/class/firmware-attributes/dell-wmi-sysman/attributes/<attr>/current_value
-#     (CustomChargeStart/CustomChargeStop are the charge thresholds on laptops
-#     the dell_laptop battery hook does not cover, such as Alienware)
-#   /sys/class/platform-profile/platform-profile-*/profile, or with several
-#     profile drivers /sys/firmware/acpi/platform_profile  (thermal profile,
-#     one of the choices the firmware lists)
-#   /sys/class/hwmon/<alienware_wmi>/fan*_boost  (Alienware fan boost, 0-255)
-#   /run/dell-power/state  (world-readable cache, refreshed as root)
-# Read-only operations additionally read:
-#   /sys/class/powercap/intel-rapl*/{name,energy_uj}   (root-only energy counters)
-#   /sys/class/power_supply/{BAT0,AC,ucsi-source-psy-*}/…
-#   /sys/class/hwmon/<alienware_wmi|dell_ddv>/{fan,temp}*  (fans and temperatures)
-#   /sys/class/dmi/id/sys_vendor, /sys/class/platform-profile/*/name
-#
-# Usage :
-#   dell-charge-limit status
-#   dell-charge-limit power-chain
-#   dell-charge-limit set-start N
-#   dell-charge-limit set-end N
-#   dell-charge-limit wmi <attribut> <valeur>
-#   dell-charge-limit profile <platform profile>
-#   dell-charge-limit fan-boost cpu|gpu <0-255>
-# Anything else is refused.
+#!/usr/bin/python3 -I
+"""Installed fixed-path CLI. Never activates test seams from environment/args."""
 
-set -u
+import json
+import os
+import signal
+import sys
+from pathlib import Path
 
-BAT=/sys/class/power_supply/BAT0
-WMI=/sys/class/firmware-attributes/dell-wmi-sysman/attributes
-STATE_DIR=/run/dell-power
-STATE=$STATE_DIR/state
-PROFILE=/sys/firmware/acpi/platform_profile
-PROFILE_CHOICES=/sys/firmware/acpi/platform_profile_choices
+# -I excludes cwd/PYTHONPATH/user site. Installed as
+# /usr/local/bin/dell-charge-limit, the backend is the root-owned
+# /usr/local/lib/dell-power/backend.py; in a checkout it is the sibling file.
+HERE = Path(__file__).resolve().parent
+LIB = HERE if (HERE / "backend.py").is_file() else Path("/usr/local/lib/dell-power")
+sys.path.insert(0, str(LIB))
+sys.dont_write_bytecode = True
+from backend import PROTOCOL_VERSION, Controller, Hardware, Refused
 
-START_MIN=50
-START_MAX=95
-END_MIN=55
-END_MAX=100
-GAP=5
-BOOST_MAX=255
 
-# Every name the kernel's platform_profile interface defines. A write must also
-# be one of the choices this laptop's firmware lists.
-PROFILES_ALLOWED="low-power cool quiet balanced balanced-performance performance custom"
+def deadline(signum, frame):
+    raise Refused("Operation exceeded deadline")
 
-declare -A WMI_ALLOWED=(
-  [PrimaryBattChargeCfg]="Standard Express Adaptive PrimAcUse Custom"
-  [LongLifeCyclePriBattery]="Enabled Disabled"
-  [UsbPowerShare]="Enabled Disabled"
-  [TypeCPower]="7.5W 15W"
-  [PeakShiftCfg]="Enabled Disabled"
-  [AdvBatteryChargeCfg]="Enabled Disabled"
-)
 
-fail() {
-  # L'erreur JSON part sur stdout (pour que le widget la parse et l'affiche)
-  # ET sur stderr (pour un usage terminal).
-  local m
-  m=$(jq -n --arg m "$1" '$m')
-  printf '%s\n' "$m"
-  printf '%s\n' "$m" >&2
-  exit 1
-}
-
-is_root() { [[ $(id -u) == 0 ]]; }
-
-wmi_read() {
-  cat "$WMI/$1/current_value" 2>/dev/null || true
-}
-
-wmi_write() {
-  printf '%s' "$2" > "$WMI/$1/current_value" 2>/dev/null
-}
-
-# Where the charge thresholds live: the battery's EC attributes (dell_laptop),
-# or the BIOS settings CustomChargeStart/CustomChargeStop through
-# dell-wmi-sysman. The second is the only path on Alienware laptops:
-# dell_laptop only binds to machines whose vendor is Dell Inc.
-threshold_backend() {
-  if [[ -e $BAT/charge_control_start_threshold && -e $BAT/charge_control_end_threshold ]]; then
-    printf 'ec'
-  elif [[ -e $WMI/CustomChargeStart/current_value && -e $WMI/CustomChargeStop/current_value ]]; then
-    printf 'sysman'
-  fi
-}
-
-read_threshold() {
-  case $(threshold_backend) in
-    ec) cat "$BAT/charge_control_$1_threshold" 2>/dev/null || true ;;
-    sysman)
-      if [[ $1 == start ]]; then wmi_read CustomChargeStart; else wmi_read CustomChargeStop; fi ;;
-  esac
-}
-
-# The threshold as a bare number (empty when it cannot be read).
-threshold_value() {
-  read_threshold "$1" | tr -cd '0-9' | head -c 3
-}
-
-write_threshold() {
-  case $(threshold_backend) in
-    ec) printf '%d' "$2" > "$BAT/charge_control_$1_threshold" 2>/dev/null ;;
-    sysman)
-      if [[ $1 == start ]]; then wmi_write CustomChargeStart "$2"; else wmi_write CustomChargeStop "$2"; fi ;;
-    *) return 1 ;;
-  esac
-}
-
-read_ec_json() {
-  local s e
-  s=$(threshold_value start)
-  e=$(threshold_value end)
-  jq -n --arg s "$s" --arg e "$e" \
-    '{start:(if $s == "" then null else ($s|tonumber) end),
-      end:(if $e == "" then null else ($e|tonumber) end)}'
-}
-
-read_wmi_json() {
-  jq -n \
-    --arg m "$(wmi_read PrimaryBattChargeCfg)" \
-    --arg l "$(wmi_read LongLifeCyclePriBattery)" \
-    --arg u "$(wmi_read UsbPowerShare)" \
-    --arg t "$(wmi_read TypeCPower)" \
-    --arg p "$(wmi_read PeakShiftCfg)" \
-    --arg a "$(wmi_read AdvBatteryChargeCfg)" \
-    '{mode:(if $m == "" then null else $m end),
-      llc:(if $l == "" then null else $l end),
-      usbPowerShare:(if $u == "" then null else $u end),
-      typeCPower:(if $t == "" then null else $t end),
-      peakShift:(if $p == "" then null else $p end),
-      advBatteryCharge:(if $a == "" then null else $a end)}'
-}
-
-read_vendor() {
-  head -c 64 /sys/class/dmi/id/sys_vendor 2>/dev/null | tr -cd '[:alnum:] ._-' || true
-}
-
-# The hwmon directory whose name is $1, if there is one.
-hwmon_dir() {
-  local h
-  for h in /sys/class/hwmon/hwmon*; do
-    if [[ $(head -c 64 "$h/name" 2>/dev/null) == "$1" ]]; then
-      printf '%s' "$h"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# The platform-profile class device when the laptop has exactly one profile
-# driver (on Alienware laptops, alienware-wmi). Only a class device accepts
-# "custom": the kernel refuses it on the legacy /sys/firmware/acpi/platform_profile.
-profile_class_dir() {
-  local d found="" n=0
-  for d in /sys/class/platform-profile/platform-profile-*; do
-    [[ -f $d/profile && -f $d/choices ]] || continue
-    found=$d
-    n=$(( n + 1 ))
-  done
-  (( n == 1 )) && printf '%s' "$found"
-  return 0
-}
-
-# The thermal profile and the choices the firmware offers (world-readable).
-read_thermal_json() {
-  local dir profile choices driver=""
-  dir=$(profile_class_dir)
-  if [[ -n $dir ]]; then
-    profile=$(head -c 64 "$dir/profile" 2>/dev/null | tr -cd 'a-z-')
-    choices=$(head -c 512 "$dir/choices" 2>/dev/null | tr -cd 'a-z- ')
-    driver=$(head -c 64 "$dir/name" 2>/dev/null | tr -cd '[:alnum:]_-')
-  else
-    profile=$(head -c 64 "$PROFILE" 2>/dev/null | tr -cd 'a-z-')
-    choices=$(head -c 512 "$PROFILE_CHOICES" 2>/dev/null | tr -cd 'a-z- ')
-  fi
-  if [[ -z $profile || -z $choices ]]; then
-    printf 'null'
-    return
-  fi
-  jq -n --arg p "$profile" --arg c "$choices" --arg d "$driver" \
-    '{driver:$d, profile:$p, choices:($c | split(" ") | map(select(length > 0)) | .[:16])}'
-}
-
-# Fans and temperatures (world-readable). Fans come from the Alienware
-# interface, which labels them and takes a boost, or from dell_ddv on other
-# Dell laptops. Temperatures: CPU and GPU from the Alienware interface first,
-# then the labelled dell_ddv sensors worth showing.
-read_sensors_json() {
-  local aw ddv src n label value max boost lines="" tab=$'\t' nl=$'\n'
-  aw=$(hwmon_dir alienware_wmi) || aw=""
-  ddv=$(hwmon_dir dell_ddv) || ddv=""
-  src=$aw
-  [[ -n $src ]] || src=$ddv
-  if [[ -n $src ]]; then
-    for n in 1 2 3 4 5 6 7 8; do
-      [[ -f $src/fan${n}_input ]] || continue
-      label=$(head -c 32 "$src/fan${n}_label" 2>/dev/null | tr -cd '[:alnum:] ')
-      value=$(head -c 12 "$src/fan${n}_input" 2>/dev/null | tr -cd '0-9')
-      max=$(head -c 12 "$src/fan${n}_max" 2>/dev/null | tr -cd '0-9')
-      boost=""
-      if [[ $src == "$aw" ]]; then boost=$(head -c 8 "$src/fan${n}_boost" 2>/dev/null | tr -cd '0-9'); fi
-      lines+="fan$tab$n$tab$label$tab$value$tab$max$tab$boost$nl"
-    done
-  fi
-  for src in "$aw" "$ddv"; do
-    [[ -n $src ]] || continue
-    for n in 1 2 3 4 5 6 7 8 9 10 11 12; do
-      [[ -f $src/temp${n}_input ]] || continue
-      label=$(head -c 32 "$src/temp${n}_label" 2>/dev/null | tr -cd '[:alnum:] ')
-      value=$(head -c 12 "$src/temp${n}_input" 2>/dev/null | tr -cd '0-9')
-      lines+="temp$tab$n$tab$label$tab$value$tab$tab$nl"
-    done
-  done
-  printf '%s' "$lines" | jq -R -s '
-    def num: if . == "" then null else (tonumber? // null) end;
-    def shown: {"CPU": "CPU", "GPU": "GPU", "Video": "GPU", "Charger": "Charger", "Ambient": "Ambient"}[.];
-    (split("\n") | map(select(length > 0) | split("\t"))) as $rows
-    | { fans: ([$rows[] | select(.[0] == "fan")
-               | { id: ("fan" + .[1]),
-                   label: (if .[2] == "Video Fan" then "GPU Fan" else .[2] end),
-                   rpm: (.[3] | num),
-                   max: (.[4] | num | if . == 0 then null else . end),
-                   boost: (.[5] | num) }] | .[:8]),
-        temps: ((reduce ($rows[] | select(.[0] == "temp") | {label: (.[2] | shown), c: (.[3] | num)}
-                         | select(.label != null and .c != null and .c > 0 and .c < 150000)) as $t
-                  ({}; if has($t.label) then . else .[$t.label] = (($t.c / 1000) | floor) end)) as $m
-                | ["CPU", "GPU", "Charger", "Ambient" | select($m[.] != null) | {label: ., c: $m[.]}]) }'
-}
-
-write_cache() { # $1 = json WMI, $2 = json thresholds
-  local tmp=$STATE.tmp
-  if mkdir -p "$STATE_DIR" && \
-     jq -n --argjson w "$1" --argjson t "$2" --arg ts "$(date +%s)" \
-       '{thresholds:$t, wmi:$w, updatedAt:$ts}' > "$tmp" 2>/dev/null; then
-    mv "$tmp" "$STATE"
-  fi
-}
-
-load_cache() { cat "$STATE" 2>/dev/null || printf '{}'; }
-
-status_json() {
-  local ec wmi src dell=false backend vendor thermal sensors
-  [[ -d $WMI ]] && dell=true
-  backend=$(threshold_backend)
-  if is_root; then
-    wmi=$(read_wmi_json)
-    # At boot, the dell-wmi-sysman interface appears progressively:
-    # retry briefly until the charge mode is readable.
-    local attempt=0
-    while (( attempt < 10 )) && $dell && [[ -z $(printf '%s' "$wmi" | jq -r '.mode // empty') ]]; do
-      sleep 1
-      wmi=$(read_wmi_json)
-      attempt=$(( attempt + 1 ))
-    done
-    ec=$(read_ec_json)
-    write_cache "$wmi" "$ec" 2>/dev/null || true
-    src=live
-  else
-    wmi=$(load_cache | jq -c '.wmi // {}' 2>/dev/null) || wmi='{}'
-    if [[ $backend == sysman ]]; then
-      # BIOS settings are root-only: the thresholds come from the cache.
-      ec=$(load_cache | jq -c '.thresholds // {start:null, end:null}' 2>/dev/null) || ec='{"start":null,"end":null}'
-    else
-      ec=$(read_ec_json)
-    fi
-    src=cache
-  fi
-  [[ -n $wmi ]] || wmi='{}'
-  [[ -n $ec ]] || ec='{"start":null,"end":null}'
-  vendor=$(read_vendor)
-  thermal=$(read_thermal_json)
-  [[ -n $thermal ]] || thermal=null
-  sensors=$(read_sensors_json)
-  [[ -n $sensors ]] || sensors='{"fans":[],"temps":[]}'
-  jq -n --argjson t "$ec" --argjson w "$wmi" --arg s "$src" --argjson d "$dell" \
-    --arg v "$vendor" --arg b "$backend" --argjson th "$thermal" --argjson se "$sensors" \
-    '{ok:true, dell:$d, vendor:$v, backend:(if $b == "" then null else $b end), source:$s,
-      thresholds:$t, wmi:$w, thermal:$th, sensors:$se}'
-}
-
-cmd_status() {
-  status_json
-}
-
-cmd_set() {
-  local which=$1
-  local value=${2:-}
-  [[ $value =~ ^[0-9]{1,3}$ ]] || fail "invalid value: $value"
-  value=$(( 10#$value ))
-  [[ -n $(threshold_backend) ]] || fail "this laptop exposes no charge thresholds"
-
-  local start end
-  start=$(threshold_value start)
-  end=$(threshold_value end)
-  [[ -n $start && -n $end ]] || fail "no battery"
-
-  local nstart nend
-  if [[ $which == start ]]; then
-    (( value >= START_MIN && value <= START_MAX )) || fail "start out of range ($START_MIN-$START_MAX)"
-    nstart=$value
-    nend=$end
-    if (( nend < nstart + GAP )); then nend=$(( nstart + GAP )); fi
-    (( nend <= END_MAX )) || fail "impossible: end would exceed $END_MAX"
-  else
-    (( value >= END_MIN && value <= END_MAX )) || fail "end out of range ($END_MIN-$END_MAX)"
-    nend=$value
-    nstart=$start
-    if (( nstart > nend - GAP )); then nstart=$(( nend - GAP )); fi
-    (( nstart >= START_MIN )) || fail "impossible: start would go below $START_MIN"
-  fi
-
-  # Les seuils ne s'appliquent qu'en mode Custom.
-  if [[ $(wmi_read PrimaryBattChargeCfg) != Custom ]]; then
-    wmi_write PrimaryBattChargeCfg Custom
-    [[ $(wmi_read PrimaryBattChargeCfg) == Custom ]] || fail "unable to switch to Custom mode"
-  fi
-
-  # Firmware may check each write against the other bound, so the writes go in
-  # the order that keeps stop >= start + gap at every step. A value that does
-  # not change is not written again: on dell-wmi-sysman each write is a BIOS
-  # setting.
-  if (( nend > end )); then
-    [[ $nend == "$end" ]] || write_threshold end "$nend" || fail "end write refused"
-    [[ $nstart == "$start" ]] || write_threshold start "$nstart" || fail "start write refused"
-  else
-    [[ $nstart == "$start" ]] || write_threshold start "$nstart" || fail "start write refused"
-    [[ $nend == "$end" ]] || write_threshold end "$nend" || fail "end write refused"
-  fi
-
-  local rs re
-  rs=$(threshold_value start)
-  re=$(threshold_value end)
-  if [[ $rs != "$nstart" || $re != "$nend" ]]; then
-    fail "the firmware adjusted the values ($rs/$re instead of $nstart/$nend)"
-  fi
-
-  status_json
-}
-
-cmd_wmi() {
-  local attr=${1:-} value=${2:-}
-  [[ -n $attr ]] || fail "attribute required"
-  # Checked before it is used as an array key, so no expansion happens in it.
-  [[ $attr =~ ^[A-Za-z]{1,40}$ ]] || fail "unknown attribute"
-  [[ -v WMI_ALLOWED[$attr] ]] || fail "unknown attribute: $attr"
-  [[ -e $WMI/$attr/current_value ]] || fail "this laptop has no $attr setting"
-
-  local allowed=${WMI_ALLOWED[$attr]} found=""
-  local v
-  for v in $allowed; do [[ $v == "$value" ]] && found=1; done
-  [[ -n $found ]] || fail "value not allowed for $attr: $value"
-
-  wmi_write "$attr" "$value" || fail "write refused by the firmware"
-
-  local rb status
-  rb=$(wmi_read "$attr")
-  status=$(status_json)
-  if [[ $rb == "$value" ]]; then
-    printf '%s' "$status" | jq '. + {applied:true}'
-  else
-    printf '%s' "$status" | jq --arg rb "$rb" '. + {applied:false, readback:$rb}'
-  fi
-}
-
-# profile — the thermal profile, from the choices the firmware lists. On
-# Alienware laptops "performance" also turns G-Mode on where the laptop has it,
-# and "custom" lets the fans follow their boost values.
-cmd_profile() {
-  local want=${1:-} ok="" v dir target choices
-  [[ $want =~ ^[a-z-]{1,32}$ ]] || fail "invalid profile"
-  for v in $PROFILES_ALLOWED; do [[ $v == "$want" ]] && ok=1; done
-  [[ -n $ok ]] || fail "unknown profile: $want"
-  dir=$(profile_class_dir)
-  if [[ -n $dir ]]; then
-    target=$dir/profile
-    choices=$(head -c 512 "$dir/choices" 2>/dev/null | tr -cd 'a-z- ')
-  else
-    [[ $want != custom ]] || fail "custom needs a laptop with a single thermal profile driver"
-    target=$PROFILE
-    choices=$(head -c 512 "$PROFILE_CHOICES" 2>/dev/null | tr -cd 'a-z- ')
-  fi
-  [[ -n $choices ]] || fail "this laptop has no thermal profiles"
-  ok=""
-  for v in $choices; do [[ $v == "$want" ]] && ok=1; done
-  [[ -n $ok ]] || fail "this laptop does not offer the $want profile"
-
-  printf '%s' "$want" > "$target" 2>/dev/null || fail "profile write refused"
-  [[ $(head -c 64 "$target" 2>/dev/null | tr -cd 'a-z-') == "$want" ]] || fail "the firmware did not switch to $want"
-  status_json
-}
-
-# fan-boost — the boost of every Alienware fan in a group (cpu or gpu), 0-255.
-# The kernel moves each fan from its base speed towards its maximum in
-# proportion; some laptops only honour it in the custom profile.
-cmd_fan_boost() {
-  local group=${1:-} value=${2:-} aw n label written=0
-  [[ $group == cpu || $group == gpu ]] || fail "fan group must be cpu or gpu"
-  [[ $value =~ ^[0-9]{1,3}$ ]] || fail "boost must be a number from 0 to $BOOST_MAX"
-  value=$(( 10#$value ))
-  (( value <= BOOST_MAX )) || fail "boost must be a number from 0 to $BOOST_MAX"
-  aw=$(hwmon_dir alienware_wmi) || fail "this laptop has no Alienware fan control"
-
-  for n in 1 2 3 4 5 6 7 8; do
-    [[ -f $aw/fan${n}_boost ]] || continue
-    label=$(head -c 32 "$aw/fan${n}_label" 2>/dev/null | tr -cd '[:alnum:] ')
-    [[ ${label,,} == "$group fan"* ]] || continue
-    printf '%d' "$value" > "$aw/fan${n}_boost" 2>/dev/null || fail "boost write refused for fan $n"
-    written=$(( written + 1 ))
-  done
-  (( written > 0 )) || fail "no $group fans on this laptop"
-  status_json
-}
-
-# power-chain — Dell power-flow chain reader. Read-only; needs root for the
-# RAPL energy counters (the whole point: they stay root-only, no world-readable
-# udev rule). Returns only 1-second aggregate watts, never raw counters.
-#
-# Sortie JSON :
-#   { "source": "mains"|"typec"|"battery", "usbType": "PD"|"" ...,
-#     "systemW": platform total (RAPL psys), "batteryW": +in/-out,
-#     "componentsW": platform minus battery, "cpuW"/"ramW"/"igpuW": RAPL,
-#     "screenW": deduced residual, "packV"/"packA": pack voltage/current }
-cmd_power_chain() {
-  local RAPL=/sys/class/powercap
-  local UCSI='/sys/class/power_supply/ucsi-source-psy-*'
-
-  rapl_energy() { # $1 = nom de domaine (psys, package-0, dram)
-    local d
-    for d in "$RAPL"/intel-rapl*; do
-      if [[ -f $d/name && $(cat "$d/name" 2>/dev/null) == "$1" ]]; then
-        cat "$d/energy_uj" 2>/dev/null
-        return
-      fi
-    done
-  }
-
-  local e_psys e_pkg e_dram e_core e_uncore f_psys f_pkg f_dram f_core f_uncore
-  local v1 i1 v2 i2
-  e_psys=$(rapl_energy psys) || e_psys=""
-  e_pkg=$(rapl_energy package-0) || e_pkg=""
-  e_dram=$(rapl_energy dram) || e_dram=""
-  e_core=$(rapl_energy core) || e_core=""
-  e_uncore=$(rapl_energy uncore) || e_uncore=""
-  v1=$(cat "$BAT/voltage_now" 2>/dev/null) || v1=""
-  i1=$(cat "$BAT/current_now" 2>/dev/null) || i1=""
-  sleep 1
-  f_psys=$(rapl_energy psys) || f_psys=""
-  f_pkg=$(rapl_energy package-0) || f_pkg=""
-  f_dram=$(rapl_energy dram) || f_dram=""
-  f_core=$(rapl_energy core) || f_core=""
-  f_uncore=$(rapl_energy uncore) || f_uncore=""
-  v2=$(cat "$BAT/voltage_now" 2>/dev/null) || v2=""
-  i2=$(cat "$BAT/current_now" 2>/dev/null) || i2=""
-  # -- end of sampling --
-
-  watts() { # $1 e1 $2 e2 -> W (µJ sur 1 s = µW)
-    awk -v a="$1" -v b="$2" 'BEGIN { printf "%.1f", (b - a) / 1e6 }'
-  }
-
-  local systemW=null cpuW=null ramW=null coreW=null uncoreW=null igpuW=null
-  [[ -n $e_psys && -n $f_psys ]] && systemW=$(watts "$e_psys" "$f_psys")
-  [[ -n $e_pkg && -n $f_pkg ]] && cpuW=$(watts "$e_pkg" "$f_pkg")
-  [[ -n $e_dram && -n $f_dram ]] && ramW=$(watts "$e_dram" "$f_dram")
-  [[ -n $e_core && -n $f_core ]] && coreW=$(watts "$e_core" "$f_core")
-  [[ -n $e_uncore && -n $f_uncore ]] && uncoreW=$(watts "$e_uncore" "$f_uncore")
-  if [[ $cpuW != null && $coreW != null && $uncoreW != null ]]; then
-    igpuW=$(awk -v p="$cpuW" -v c="$coreW" -v u="$uncoreW" \
-      'BEGIN { g = p - c - u; if (g < 0) g = 0; printf "%.1f", g }')
-  fi
-
-  # Battery power averaged over the sampling window (V×I at both ends) so it
-  # stays consistent with the RAPL deltas (1 s averages).
-  local batteryW=null
-  if [[ -n $v1 && -n $i1 && -n $v2 && -n $i2 ]]; then
-    batteryW=$(awk -v v1="$v1" -v i1="$i1" -v v2="$v2" -v i2="$i2" \
-      'BEGIN { printf "%.1f", (v1 * i1 + v2 * i2) / 2e12 }')
-  fi
-
-  # Pack voltage (V) and current (A), same averaging window. The EC reports
-  # unsigned current; the sign is applied from the battery state further down.
-  local packV=null packA=null
-  if [[ -n $v1 && -n $v2 ]]; then
-    packV=$(awk -v v1="$v1" -v v2="$v2" 'BEGIN { printf "%.2f", (v1 + v2) / 2e6 }')
-  fi
-  if [[ -n $i1 && -n $i2 ]]; then
-    packA=$(awk -v i1="$i1" -v i2="$i2" 'BEGIN { printf "%.2f", (i1 + i2) / 2e6 }')
-  fi
-
-  # Design capacity when new (Wh): charge_full_design (µAh) × nominal voltage.
-  local nominalWh=null cfd vmin
-  cfd=$(cat "$BAT/charge_full_design" 2>/dev/null) || cfd=""
-  vmin=$(cat "$BAT/voltage_min_design" 2>/dev/null) || vmin=""
-  if [[ -n $cfd && -n $vmin ]]; then
-    nominalWh=$(awk -v c="$cfd" -v v="$vmin" 'BEGIN { printf "%.0f", c * v / 1e12 }')
-  fi
-
-  local ac uc=0 f
-  ac=$(cat /sys/class/power_supply/AC/online 2>/dev/null) || ac=0
-  for f in $UCSI; do
-    [[ -d $f ]] || continue
-    if [[ $(cat "$f/online" 2>/dev/null) == 1 ]]; then uc=1; break; fi
-  done
-
-  # USB-C port: power delivered to a connected device (phone, etc.).
-  # Le pilote ucsi peut rapporter une tension nulle : on suppose alors 5 V.
-  local portW=null uv ui
-  for f in $UCSI; do
-    [[ -d $f ]] || continue
-    uv=$(cat "$f/voltage_now" 2>/dev/null) || uv=""
-    ui=$(cat "$f/current_now" 2>/dev/null) || ui=""
-    if [[ -n $ui && $ui -gt 0 ]]; then
-      [[ -z $uv || $uv -eq 0 ]] && uv=5000000
-      portW=$(awk -v v="$uv" -v i="$ui" 'BEGIN { printf "%.1f", v * i / 1e12 }')
-      break
-    fi
-  done
-
-  local usbType=""
-  if [[ $uc == 1 ]]; then
-    for f in $UCSI; do
-      [[ -f $f/usb_type ]] || continue
-      usbType=$(tr -d '[]' < "$f/usb_type" | awk '{print $1}')
-      break
-    done
-  fi
-
-  local source
-  if [[ $ac == 1 ]]; then source="mains"
-  elif [[ $uc == 1 ]]; then source="typec"
-  else source="battery"
-  fi
-
-  # The EC may report positive current even while discharging. Trust the
-  # battery STATE (not the source presence) for the sign: a weak USB-C adapter
-  # can leave the battery powering the laptop even while "plugged in".
-  local bstat discharging=false
-  bstat=$(cat "$BAT/status" 2>/dev/null) || bstat=""
-  [[ $bstat == "Discharging" ]] && discharging=true
-
-  if $discharging && [[ $batteryW != null ]]; then
-    batteryW=$(awk -v w="$batteryW" 'BEGIN { if (w > 0) w = -w; printf "%.1f", w }')
-  fi
-  if $discharging && [[ $packA != null ]]; then
-    packA=$(awk -v a="$packA" 'BEGIN { if (a > 0) a = -a; printf "%.2f", a }')
-  fi
-
-  local componentsW=null adapterW=null
-  if [[ $batteryW != null ]]; then
-    if $discharging; then
-      # The battery is supplying. psys measures the platform draw, so the
-      # adapter's contribution is whatever the battery doesn't cover.
-      if [[ $systemW != null ]]; then
-        componentsW=$systemW
-        adapterW=$(awk -v s="$systemW" -v b="$batteryW" \
-          'BEGIN { a = s + b; if (a < 0) a = 0; printf "%.1f", a }')
-      else
-        componentsW=$(awk -v b="$batteryW" 'BEGIN { c = -b; if (c < 0) c = 0; printf "%.1f", c }')
-      fi
-    elif [[ $source == "battery" ]]; then
-      # On battery (not discharging per state, e.g. idle): same fallback.
-      componentsW=$(awk -v b="$batteryW" 'BEGIN { c = -b; if (c < 0) c = 0; printf "%.1f", c }')
-    elif [[ $systemW != null ]]; then
-      # On AC, psys measures the platform ALONE (charging is not counted —
-      # verified empirically). The adapter provides both.
-      componentsW=$systemW
-      adapterW=$(awk -v s="$systemW" -v b="$batteryW" \
-        'BEGIN { c = s + (b > 0 ? b : 0); printf "%.1f", c }')
-    fi
-  fi
-
-  # "Other" is what the platform draws beyond the CPU package and, where the
-  # CPU reports it (dram), the memory; without dram it includes the memory.
-  local screenW=null
-  if [[ $componentsW != null && $cpuW != null ]]; then
-    screenW=$(awk -v c="$componentsW" -v p="$cpuW" -v r="$ramW" \
-      'BEGIN { if (r == "null") r = 0; s = c - p - r; if (s < 0) s = 0; printf "%.1f", s }')
-  fi
-
-  jq -n --arg s "$source" --arg t "$usbType" \
-    --argjson b "$batteryW" --argjson y "$systemW" --argjson c "$componentsW" \
-    --argjson a "$adapterW" \
-    --argjson p "$cpuW" --argjson r "$ramW" --argjson e "$screenW" \
-    --argjson g "$igpuW" --argjson n "$nominalWh" --argjson w "$portW" \
-    --argjson pv "$packV" --argjson pa "$packA" \
-    '{source:$s, usbType:$t, batteryW:$b, systemW:$y, adapterW:$a, componentsW:$c, cpuW:$p, ramW:$r, screenW:$e, igpuW:$g, nominalWh:$n, portW:$w, packV:$pv, packA:$pa}'
-}
-
-cmd=${1:-}
-case "$cmd" in
-  status) cmd_status ;;
-  power-chain) cmd_power_chain ;;
-  set-start) cmd_set start "${2:-}" ;;
-  set-end) cmd_set end "${2:-}" ;;
-  wmi) cmd_wmi "${@:2}" ;;
-  profile) cmd_profile "${2:-}" ;;
-  fan-boost) cmd_fan_boost "${2:-}" "${3:-}" ;;
-  *) fail "unknown command: ${cmd:-}" ;;
-esac
+if __name__ == "__main__":
+    signal.signal(signal.SIGALRM, deadline)
+    signal.alarm(45)
+    os.environ.clear()
+    os.environ.update(PATH="/usr/bin:/bin", LANG="C", LC_ALL="C")
+    read_ops = {"status", "status-live", "sensors", "transaction-state"}
+    try:
+        snapshot_restore = len(sys.argv) == 4 and sys.argv[1] == "profile-restore-state"
+        snapshot_apply = len(sys.argv) == 5 and sys.argv[1] == "profile-owned-state"
+        if len(sys.argv) > 8 or any(
+            len(arg)
+            > (
+                8192
+                if (snapshot_restore and i > 1) or (snapshot_apply and i == 4)
+                else 64
+            )
+            for i, arg in enumerate(sys.argv[1:], 1)
+        ):
+            raise Refused("Arguments exceed bounds")
+        if len(sys.argv) > 1 and sys.argv[1] not in read_ops and os.geteuid() != 0:
+            raise Refused("This operation requires authorization")
+        if len(sys.argv) > 1 and sys.argv[1] == "status-live" and os.geteuid() != 0:
+            raise Refused("Live WMI status requires authorization")
+        result = Controller(
+            Hardware(), rollback_deadline=lambda: signal.alarm(10)
+        ).execute(sys.argv[1:])
+    except (OSError, Refused) as error:
+        result = {
+            "ok": False,
+            "protocolVersion": PROTOCOL_VERSION,
+            "applied": False,
+            "error": str(error)[:512],
+            "rollback": {
+                "attempted": None,
+                "ok": None,
+                "error": "Transaction outcome unavailable",
+            },
+        }
+    signal.alarm(0)
+    encoded = json.dumps(result, separators=(",", ":"), allow_nan=False)
+    if len(encoded) > 65536:
+        encoded = json.dumps(
+            {
+                "ok": False,
+                "protocolVersion": PROTOCOL_VERSION,
+                "error": "Output exceeded bound",
+            }
+        )
+    print(encoded)
+    sys.exit(0 if result.get("ok") else 1)

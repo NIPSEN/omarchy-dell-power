@@ -71,6 +71,11 @@ Panel {
   // icon, so the open-panel mark takes the painted width instead of the
   // icon-sized fraction of the slot the fallback assumes.
   readonly property real openPanelIndicatorWidth: showPercentage && !button.vertical ? button.glyphPaintedWidth : 0
+  readonly property string percentText: showPercentage && !button.vertical ? Math.round(batteryFraction * 100) + "%" : ""
+  // Newer Omarchy shrinks BarIconButton's text to one icon's size and draws
+  // labels through labelText instead. Older builds lack labelText, so there
+  // the percentage stays in the icon text, which they render at full size.
+  readonly property bool hostDrawsLabel: "labelText" in button
   readonly property bool batteryPresent: {
     var device = UPower.displayDevice
     return !!(device && device.isPresent)
@@ -617,11 +622,12 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.showPercentage && !vertical
-      ? Math.round(root.batteryFraction * 100) + "% " + root.batteryIcon()
-      : root.batteryIcon()
+    text: root.hostDrawsLabel || root.percentText === ""
+      ? root.batteryIcon()
+      : root.percentText + " " + root.batteryIcon()
     slotSize: Style.bar.iconSlot * (root.showPercentage && !vertical ? 2 : 1)
     tooltipText: ""
+    Component.onCompleted: if (root.hostDrawsLabel) labelText = Qt.binding(function() { return root.percentText })
     onPressed: function(b) {
       if (!root.batteryPresent) return
       if (b === Qt.RightButton) root.togglePercentage()

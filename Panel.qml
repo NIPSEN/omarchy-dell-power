@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Services.UPower
 import qs.Commons
+import qs.Commons as Commons
 import qs.Ui
 import "Model.js" as Model
 
@@ -135,7 +136,7 @@ Panel {
   }
 
   readonly property color batteryFillColor: {
-    return root.bar ? root.bar.foreground : Color.foreground
+    return root.bar ? root.bar.foreground : Commons.Color.foreground
   }
 
   // Cute agent-flavored phrases shown in the hero status line, rotated on a
@@ -748,7 +749,7 @@ Panel {
             anchors.verticalCenter: barTrack.verticalCenter
             height: barTrack.height
             radius: barTrack.radius
-            color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.22)
+            color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.22)
             opacity: root.dellStatus !== null && root.dellStatus.mode === "Custom" ? 1 : 0.6
           }
 
@@ -782,7 +783,7 @@ Panel {
             height: barTrack.height + Style.space(9)
             anchors.verticalCenter: barTrack.verticalCenter
             radius: 2.5
-            color: Color.accent
+            color: Commons.Color.accent
             opacity: root.dellStatus !== null && root.dellStatus.mode === "Custom" ? 1 : 0.55
           }
 
@@ -794,7 +795,7 @@ Panel {
             height: barTrack.height + Style.space(9)
             anchors.verticalCenter: barTrack.verticalCenter
             radius: 2.5
-            color: Color.accent
+            color: Commons.Color.accent
             opacity: root.dellStatus !== null && root.dellStatus.mode === "Custom" ? 1 : 0.55
           }
 
@@ -907,16 +908,16 @@ Panel {
             width: thresholdTipLabel.implicitWidth + 14
             height: thresholdTipLabel.implicitHeight + 8
             radius: Math.max(2, Style.cornerRadius)
-            color: Color.tooltip.background
+            color: Commons.Color.tooltip.background
             border.width: 1
-            border.color: Color.tooltip.border
+            border.color: Commons.Color.tooltip.border
 
             Text {
               id: thresholdTipLabel
               anchors.centerIn: parent
               textFormat: Text.PlainText
               text: barMouse.hoverText
-              color: Color.tooltip.text
+              color: Commons.Color.tooltip.text
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
             }
@@ -927,7 +928,7 @@ Panel {
           visible: root.dellError !== ""
           textFormat: Text.PlainText
           text: root.dellError
-          color: Color.urgent
+          color: Commons.Color.urgent
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
           wrapMode: Text.WordWrap
@@ -1490,7 +1491,7 @@ Panel {
         anchors.horizontalCenter: parent.horizontalCenter
         textFormat: Text.PlainText
         text: tempTile.reading ? tempTile.reading.c + "°" : "—"
-        color: tempTile.reading && tempTile.reading.c >= 90 ? Color.urgent : root.bar.foreground
+        color: tempTile.reading && tempTile.reading.c >= 90 ? Commons.Color.urgent : root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.bodySmall
         font.bold: true

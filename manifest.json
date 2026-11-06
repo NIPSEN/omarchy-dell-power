@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nipsen.dell-power",
   "name": "Dell Power",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": "NIPSEN",
   "description": "Battery, Dell and Alienware charge limit, thermal modes, fans, power profile, and system stats",
   "kinds": [

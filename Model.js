@@ -324,11 +324,26 @@ function parsePowerChain(raw) {
     ramW: num(obj.ramW),
     screenW: num(obj.screenW),
     igpuW: num(obj.igpuW),
+    npuPresent: obj.npuPresent === true,
+    npuW: num(obj.npuW),
     nominalWh: num(obj.nominalWh),
     portW: num(obj.portW),
     packV: num(obj.packV),
     packA: num(obj.packA)
   }
+}
+
+// Package RAPL already contains NPU energy. The iGPU estimate is the package
+// remainder after core and uncore, so allocate measured NPU watts out of it.
+function cpuComponentW(chain) {
+  if (!chain || chain.cpuW === null || chain.igpuW === null) return null
+  return Math.max(0, chain.cpuW - chain.igpuW)
+}
+
+function igpuComponentW(chain) {
+  if (!chain || chain.igpuW === null) return null
+  var npuW = chain.npuW !== null && chain.npuW !== undefined ? chain.npuW : 0
+  return Math.max(0, chain.igpuW - npuW)
 }
 
 function parseDellStatus(raw) {
@@ -410,6 +425,8 @@ if (typeof module !== "undefined") {
     fanFraction: fanFraction,
     boostPercent: boostPercent,
     parseDellStatus: parseDellStatus,
-    parsePowerChain: parsePowerChain
+    parsePowerChain: parsePowerChain,
+    cpuComponentW: cpuComponentW,
+    igpuComponentW: igpuComponentW
   }
 }

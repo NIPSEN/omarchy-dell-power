@@ -145,7 +145,7 @@ ShellRoot {
           "readings carry no estimate mark")
         // A pause under a non-Custom mode names that mode as the limit, and
         // reads Paused rather than Holding.
-        var mode = c.dellStatus.mode
+        var savedStatus = c.dellStatus
         var previousState = UPower.displayDevice.state
         c.dellStatus = Object.assign({}, c.dellStatus, {mode: "Adaptive"})
         UPower.displayDevice.state = UPowerDeviceState.PendingCharge
@@ -153,7 +153,23 @@ ShellRoot {
         fixture.check(panel.chargingPaused && !panel.chargeThresholdActive
           && limitStat.label === "Charge limit" && limitStat.value === "Adaptive",
           "a pause in another mode names that mode as the charge limit")
-        c.dellStatus = Object.assign({}, c.dellStatus, {mode: mode})
+        // Charging counts to the stop threshold only in Custom mode; the other
+        // modes charge to 100% whatever threshold the kernel still reports.
+        // 34.3 of 51.2 Wh at 15 W: 27m to 80%, 1h 8m to 100%, 2h 17m to empty.
+        UPower.displayDevice.state = UPowerDeviceState.Charging
+        c.dellStatus = Object.assign({}, c.dellStatus, {mode: "Custom", hasThresholds: true, start: 50, end: 80})
+        fixture.check(limitStat.label === "Time to limit" && limitStat.value === "27m",
+          "Custom mode counts to the stop threshold")
+        c.dellStatus = Object.assign({}, c.dellStatus, {mode: "Adaptive"})
+        fixture.check(limitStat.label === "Time to full" && limitStat.value === "1h 8m",
+          "other modes count to 100% past a stale threshold")
+        c.dellStatus = Object.assign({}, c.dellStatus, {mode: "PrimAcUse"})
+        fixture.check(limitStat.label === "Time to full" && limitStat.value === "—",
+          "an unreported ceiling has no time to count")
+        UPower.displayDevice.state = UPowerDeviceState.Discharging
+        fixture.check(limitStat.label === "Time left" && limitStat.value === "2h 17m",
+          "a battery draining on AC shows the time left")
+        c.dellStatus = savedStatus
         UPower.displayDevice.state = previousState
         fixture.find(panel, "thermalSectionHeader").clicked()
         panel.openFeatures()

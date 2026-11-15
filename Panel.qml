@@ -277,14 +277,31 @@ Panel {
     return txt
   }
 
-  // "Time to limit" instead of "Time to full" when a Custom stop threshold
-  // is active and the battery is charging towards it.
-  function timeToLimitText() {
-    if (!dellThresholdsReady || dellStatus === null || dellStatus.mode !== "Custom") return ""
-    var rate = powerChain && powerChain.batteryW !== null ? powerChain.batteryW
-      : (Presentation.finite(basicBattery.rateW) ? basicBattery.rateW : parseFloat(batteryInfo.rate || ""))
-    var size = Presentation.finite(basicBattery.energyFullWh) ? basicBattery.energyFullWh : parseFloat(batteryInfo.size || "")
-    return Model.timeToThresholdText(dellStatus.end, batteryFraction, size, rate)
+  // ---------- Time left / to full / to limit ----------
+
+  // Where the firmware stops charging: the stop threshold in Custom mode, 100%
+  // in the modes that charge fully, null when nothing reports it.
+  readonly property var chargeTarget: Model.chargeTargetPercent(dellStatus)
+  // The battery itself says which way the charge flows: a load bigger than the
+  // adapter drains it while UPower still reports AC power.
+  readonly property bool batteryDraining: {
+    var d = UPower.displayDevice
+    return root.discharging || !!(d && d.isPresent && d.state === UPowerDeviceState.Discharging)
+  }
+
+  function timeStatLabel() {
+    if (batteryDraining) return "Time left"
+    return chargeTarget !== null && chargeTarget < 100 ? "Time to limit" : "Time to full"
+  }
+
+  // Omarchy's own estimate counts to the kernel's stop threshold whichever
+  // mode is active, so it stands in only for the time left, or when the helper
+  // reports no charge mode at all.
+  function timeStatValue() {
+    var t = Model.batteryTimeText(UPower.displayDevice, upowerStates(), chargeTarget)
+    if (t !== "") return t
+    if (batteryDraining || !dellStatus || dellStatus.mode === "") return batteryInfo.time || "—"
+    return "—"
   }
 
   // ---------- Power flow chain ----------
@@ -874,19 +891,14 @@ Panel {
             // or the mode itself when another mode stopped charging.
             InfoPair {
               objectName: "limitStat"
-              label: root.chargingPaused ? "Charge limit"
-                : (root.discharging ? "Time left"
-                  : (root.charging && root.timeToLimitText() !== "" ? "Time to limit" : "Time to full"))
+              label: root.chargingPaused ? "Charge limit" : root.timeStatLabel()
               value: root.chargingPaused
                 ? (root.chargeThresholdActive && root.dellThresholdsReady && root.dellStatus
                   ? (root.dellStatus.start + "-" + root.dellStatus.end + "%")
                   : (root.dellStatus && root.dellStatus.mode
                     ? (root.dellStatus.mode === "PrimAcUse" ? "AC" : root.dellStatus.mode)
                     : (root.batteryInfo.threshold || "-")))
-                : (root.batteryFlowIdle ? "-"
-                  : (root.charging && root.timeToLimitText() !== ""
-                    ? root.timeToLimitText()
-                    : (root.batteryInfo.time || "—")))
+                : (root.batteryFlowIdle ? "-" : root.timeStatValue())
             }
             // An active Custom limit holds the charge; any other pause (another
             // mode's ceiling, the firmware) is reported as paused.

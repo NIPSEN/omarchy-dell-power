@@ -81,11 +81,45 @@ check("chain packA", chainVA.packA, 1.84)
 // ---- timeToThresholdText ----
 check("t2t 70% @67% 29Wh 15.9W -> 3m", Model.timeToThresholdText(70, 0.67, 29, 15.9), "3m")
 check("t2t 80% @50% 60Wh 60W -> 18m", Model.timeToThresholdText(80, 0.5, 60, 60), "18m")
-check("t2t 80% @50% 60Wh 6W -> 3h 0m", Model.timeToThresholdText(80, 0.5, 60, 6), "3h 0m")
+check("t2t 80% @50% 60Wh 6W -> 3h", Model.timeToThresholdText(80, 0.5, 60, 6), "3h")
 check("t2t au-dessus du seuil -> vide", Model.timeToThresholdText(70, 0.75, 60, 10), "")
 check("t2t taux nul -> vide", Model.timeToThresholdText(70, 0.6, 60, 0), "")
 check("t2t NaN -> vide", Model.timeToThresholdText(70, 0.6, NaN, 10), "")
 check("t2t <1m", Model.timeToThresholdText(70, 0.699, 29, 60), "<1m")
+
+// ---- durationText (Omarchy's battery status format) ----
+check("duration 0.4 -> <1m", Model.durationText(0.4), "<1m")
+check("duration 45 -> 45m", Model.durationText(45), "45m")
+check("duration 59.6 -> 1h", Model.durationText(59.6), "1h")
+check("duration 125 -> 2h 5m", Model.durationText(125), "2h 5m")
+check("duration NaN -> vide", Model.durationText(NaN), "")
+
+// ---- chargeTargetPercent: Dell applies the thresholds only in Custom ----
+check("target Custom -> end", Model.chargeTargetPercent({mode: "Custom", hasThresholds: true, end: 80}), 80)
+check("target Custom without thresholds -> null", Model.chargeTargetPercent({mode: "Custom", hasThresholds: false, end: -1}), null)
+check("target Adaptive ignores the stale end -> 100", Model.chargeTargetPercent({mode: "Adaptive", hasThresholds: true, end: 80}), 100)
+check("target Standard -> 100", Model.chargeTargetPercent({mode: "Standard", hasThresholds: true, end: 80}), 100)
+check("target Express -> 100", Model.chargeTargetPercent({mode: "Express", hasThresholds: true, end: 80}), 100)
+check("target PrimAcUse -> null", Model.chargeTargetPercent({mode: "PrimAcUse", hasThresholds: true, end: 80}), null)
+check("target unknown mode -> null", Model.chargeTargetPercent({mode: "", hasThresholds: true, end: 80}), null)
+check("target no status -> null", Model.chargeTargetPercent(null), null)
+
+// ---- batteryTimeText: UPower's own energy and averaged rate ----
+// Readings from a Latitude charging at 77% in Adaptive mode with a stale
+// 50-80% Custom threshold: UPower counts 33.1 minutes to 100%.
+const S = { Charging: 1, Discharging: 2, FullyCharged: 3, PendingCharge: 4 }
+const lat = { isPresent: true, state: S.Charging, energy: 53.0608, energyCapacity: 68.6068, changeRate: 28.139 }
+check("eta charging Adaptive -> to 100%", Model.batteryTimeText(lat, S, 100), "33m")
+check("eta charging Custom 80 -> to limit", Model.batteryTimeText(lat, S, 80), "4m")
+check("eta charging past the limit -> vide", Model.batteryTimeText(lat, S, 75), "")
+check("eta charging unknown target -> vide", Model.batteryTimeText(lat, S, null), "")
+check("eta discharging -> energy over rate", Model.batteryTimeText(Object.assign({}, lat, {state: S.Discharging, changeRate: 9.5}), S, 80), "5h 35m")
+check("eta discharging ignores the target", Model.batteryTimeText(Object.assign({}, lat, {state: S.Discharging, changeRate: 9.5}), S, null), "5h 35m")
+check("eta negative rate is a magnitude", Model.batteryTimeText(Object.assign({}, lat, {state: S.Discharging, changeRate: -9.5}), S, null), "5h 35m")
+check("eta idle rate -> vide", Model.batteryTimeText(Object.assign({}, lat, {changeRate: 0}), S, 100), "")
+check("eta pending charge -> vide", Model.batteryTimeText(Object.assign({}, lat, {state: S.PendingCharge}), S, 100), "")
+check("eta no capacity -> vide", Model.batteryTimeText(Object.assign({}, lat, {energyCapacity: 0}), S, 100), "")
+check("eta absent battery -> vide", Model.batteryTimeText({ isPresent: false }, S, 100), "")
 
 // ---- Alienware: BIOS thresholds, thermal profiles, fans ----
 const aw = Model.parseDellStatus(

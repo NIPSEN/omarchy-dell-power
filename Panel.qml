@@ -351,14 +351,31 @@ Panel {
     return txt
   }
 
-  // "Time to limit" instead of "Time to full" when a Custom stop threshold
-  // is active and the battery is charging towards it.
-  function timeToLimitText() {
-    if (!dellThresholdsReady || dellStatus === null || dellStatus.mode !== "Custom") return ""
-    var rate = powerChain && powerChain.batteryW !== null
-      ? powerChain.batteryW
-      : parseFloat(batteryInfo.rate || "")
-    return Model.timeToThresholdText(dellStatus.end, batteryFraction, parseFloat(batteryInfo.size || ""), rate)
+  // ---------- Time left / to full / to limit ----------
+
+  // Where the firmware stops charging: the stop threshold in Custom mode, 100%
+  // in the modes that charge fully, null when nothing reports it.
+  readonly property var chargeTarget: Model.chargeTargetPercent(dellStatus)
+  // The battery itself says which way the charge flows: a load bigger than the
+  // adapter drains it while UPower still reports AC power.
+  readonly property bool batteryDraining: {
+    var d = UPower.displayDevice
+    return root.discharging || !!(d && d.isPresent && d.state === UPowerDeviceState.Discharging)
+  }
+
+  function timeStatLabel() {
+    if (batteryDraining) return "Time left"
+    return chargeTarget !== null && chargeTarget < 100 ? "Time to limit" : "Time to full"
+  }
+
+  // Omarchy's own estimate counts to the kernel's stop threshold whichever
+  // mode is active, so it stands in only for the time left, or when the helper
+  // reports no charge mode at all.
+  function timeStatValue() {
+    var t = Model.batteryTimeText(UPower.displayDevice, upowerStates(), chargeTarget)
+    if (t !== "") return t
+    if (batteryDraining || !dellStatus || dellStatus.mode === "") return batteryInfo.time || "—"
+    return "—"
   }
 
   // ---------- Power flow chain ----------
@@ -961,17 +978,12 @@ Panel {
             width: (parent.width - parent.spacing) / 2
             spacing: Style.spacing.labelGap
             InfoPair {
-              label: root.chargeThresholdActive ? "Charge limit"
-                : (root.discharging ? "Time left"
-                  : (root.charging && root.timeToLimitText() !== "" ? "Time to limit" : "Time to full"))
+              label: root.chargeThresholdActive ? "Charge limit" : root.timeStatLabel()
               value: root.chargeThresholdActive
                 ? (root.dellThresholdsReady
                   ? (root.dellStatus.start + "-" + root.dellStatus.end + "%")
                   : (root.batteryInfo.threshold || "-"))
-                : (root.batteryFlowIdle ? "-"
-                  : (root.charging && root.timeToLimitText() !== ""
-                    ? root.timeToLimitText()
-                    : (root.batteryInfo.time || "—")))
+                : (root.batteryFlowIdle ? "-" : root.timeStatValue())
             }
             InfoPair {
               label: root.chargeThresholdActive ? "Battery state" : (root.discharging ? "Discharging" : "Charging")

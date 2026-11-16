@@ -134,6 +134,16 @@ function dellStepEnd(value, start, delta, step) {
   return dellClampEnd(cur + delta * step, start)
 }
 
+// A duration in the form Omarchy's battery status uses: "<1m", "45m", "3h",
+// "2h 5m".
+function durationText(minutes) {
+  var m = Math.round(Number(minutes))
+  if (!isFinite(m)) return ""
+  if (m < 1) return "<1m"
+  if (m < 60) return m + "m"
+  return Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "")
+}
+
 // Estimated time until the battery reaches the stop threshold while charging.
 // Returns "" when the estimate is not meaningful (above the threshold,
 // no meaningful rate, missing inputs).
@@ -146,10 +156,42 @@ function timeToThresholdText(endPercent, fraction, sizeWh, rateW) {
   if (frac >= end / 100) return ""
   if (rate <= 0.5) return ""
   if (size <= 0) return ""
-  var minutes = Math.round((end / 100 - frac) * size / rate * 60)
-  if (minutes < 1) return "<1m"
-  if (minutes < 60) return minutes + "m"
-  return Math.floor(minutes / 60) + "h " + (minutes % 60) + "m"
+  return durationText((end / 100 - frac) * size / rate * 60)
+}
+
+// The percent the firmware charges up to. Dell applies the start/stop
+// thresholds only in Custom mode, yet the kernel and UPower keep reporting
+// them in every mode, so a count to that threshold is wrong anywhere else:
+// Standard, Express and Adaptive charge to 100%. Primarily AC Use stops at a
+// ceiling of its own that nothing reports, and an unknown mode has no known
+// target either; both return null.
+function chargeTargetPercent(dellStatus) {
+  var s = dellStatus || {}
+  if (s.mode === "Custom") return s.hasThresholds && isFinite(Number(s.end)) ? Number(s.end) : null
+  if (s.mode === "Standard" || s.mode === "Express" || s.mode === "Adaptive") return 100
+  return null
+}
+
+// Time left while the battery drains, or time to targetPercent while it
+// charges, worked out from UPower's own readings. UPower turns a battery that
+// reports charge and current into energy and power with one nominal voltage,
+// so the division holds whatever the pack voltage is; dividing that energy by
+// the live volts-times-amps reads short by as much as the pack sits above its
+// nominal voltage (about 12% while charging). UPower's rate is also averaged,
+// so a burst of load doesn't swing the time left by hours. Returns "" when
+// there is no meaningful estimate.
+function batteryTimeText(device, states, targetPercent) {
+  var d = device || {}
+  var s = states || {}
+  if (!d.isPresent) return ""
+  var energy = Number(d.energy)
+  var capacity = Number(d.energyCapacity)
+  var rate = Math.abs(Number(d.changeRate))
+  if (!isFinite(energy) || !isFinite(rate) || energy < 0 || rate <= 0.5) return ""
+  if (d.state === s.Discharging) return durationText(energy / rate * 60)
+  if (d.state !== s.Charging || targetPercent === null || targetPercent === undefined) return ""
+  if (!isFinite(capacity) || capacity <= 0) return ""
+  return timeToThresholdText(targetPercent, energy / capacity, capacity, rate)
 }
 
 // end for a given start, adjusted to preserve the invariant.
@@ -391,7 +433,10 @@ if (typeof module !== "undefined") {
     dellClampEnd: dellClampEnd,
     dellStepStart: dellStepStart,
     dellStepEnd: dellStepEnd,
+    durationText: durationText,
     timeToThresholdText: timeToThresholdText,
+    chargeTargetPercent: chargeTargetPercent,
+    batteryTimeText: batteryTimeText,
     dellEndForStart: dellEndForStart,
     THERMAL_ORDER: THERMAL_ORDER,
     thermalChoices: thermalChoices,

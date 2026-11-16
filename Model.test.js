@@ -105,7 +105,7 @@ check("target unknown mode -> null", Model.chargeTargetPercent({mode: "", hasThr
 check("target no status -> null", Model.chargeTargetPercent(null), null)
 
 // ---- batteryTimeText: UPower's own energy and averaged rate ----
-// Readings from a Latitude charging at 77% in Adaptive mode with a stale
+// Readings from a Dell XPS 14 charging at 77% in Adaptive mode with a stale
 // 50-80% Custom threshold: UPower counts 33.1 minutes to 100%.
 const S = { Charging: 1, Discharging: 2, FullyCharged: 3, PendingCharge: 4 }
 const lat = { isPresent: true, state: S.Charging, energy: 53.0608, energyCapacity: 68.6068, changeRate: 28.139 }

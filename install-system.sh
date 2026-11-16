@@ -22,7 +22,7 @@
 # After changing a payload or the core, regenerate the manifest, commit and
 # push (installs only succeed at a pushed commit):
 #   sha256sum system/installer.py system/dell-charge-limit \
-#     system/*.policy system/*.service > SHA256SUMS
+#     system/backend.py system/*.policy > SHA256SUMS
 
 set -euo pipefail
 PATH=/usr/bin:/bin

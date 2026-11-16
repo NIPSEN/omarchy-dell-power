@@ -7,12 +7,15 @@
 # granted, and hands them to the interpreter through an anonymous pipe.
 # Nothing here ever opens a path from the user-writable plugin checkout:
 # every artifact comes from the publisher over HTTPS and is digest-verified.
+# (The one exception is --local, which a developer runs explicitly through
+# install.sh --helper to install their own checkout; see read_checkout.)
 #
 # Installs/removes:
 #   - /usr/local/bin/dell-charge-limit           (privileged helper)
+#   - /usr/local/lib/dell-power/backend.py       (the helper's transactions)
 #   - /usr/share/polkit-1/actions/…dell-power.policy
-#   - /etc/systemd/system/dell-power-state.service (boot-time cache priming)
 #   - /etc/sudoers.d/dell-power                  (NOPASSWD, scoped to the helper)
+# and retires the boot-time cache service of versions <= 1.5.0.
 #
 # Activation is transactional with respect to an existing NOPASSWD rule:
 # revoke authorization first, stage and verify every artifact, commit the
@@ -48,17 +51,22 @@ UDEVADM = "/usr/bin/udevadm"
 VISUDO = "/usr/bin/visudo"
 
 HELPER = "/usr/local/bin/dell-charge-limit"
+BACKEND_DIR = "/usr/local/lib/dell-power"
+BACKEND = f"{BACKEND_DIR}/backend.py"
 POLICY = "/usr/share/polkit-1/actions/io.github.nipsen.dell-power.policy"
-UNIT = "/etc/systemd/system/dell-power-state.service"
 SUDOERS = "/etc/sudoers.d/dell-power"
 # Installed by versions <= 1.1.1; no longer shipped, always cleaned up.
 LEGACY_UDEV = "/etc/udev/rules.d/90-dell-power-energy.rules"
+# Installed by versions <= 1.5.0. The helper now reads the root-only BIOS
+# settings on demand, so the boot-time cache is retired on update.
+LEGACY_UNIT = "/etc/systemd/system/dell-power-state.service"
+LEGACY_CACHE = "/run/dell-power"
 
 # publisher relpath -> (destination, mode)
 PAYLOADS = {
     "system/dell-charge-limit": (HELPER, 0o755),
+    "system/backend.py": (BACKEND, 0o644),
     "system/io.github.nipsen.dell-power.policy": (POLICY, 0o644),
-    "system/dell-power-state.service": (UNIT, 0o644),
 }
 
 
@@ -74,8 +82,13 @@ def fail(msg):
 def run(argv, timeout=30):
     # Absolute executable, closed environment, hard deadline, own process
     # group so a timed-out child cannot linger.
-    proc = subprocess.Popen(argv, env=CHILD_ENV, start_new_session=True,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        argv,
+        env=CHILD_ENV,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     try:
         return proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -106,9 +119,27 @@ def fetch(commit, name, cap):
         raise InstallError(
             f"could not fetch {name} from the publisher at {commit[:12]}…: {e}\n"
             "Check the network connection, and 'git status' if the checkout has "
-            "unpushed commits.")
+            "unpushed commits."
+        )
     if len(body) > cap:
         raise InstallError(f"{name}: publisher response exceeds {cap} bytes")
+    return body
+
+
+def read_checkout(root, name, cap):
+    # Development only (install.sh --helper): the developer's own checkout
+    # stands in for the publisher. Each file is read once, into memory, and
+    # then verified against the checkout's SHA256SUMS exactly like a fetched
+    # one, so a stale manifest fails here as it would for a published commit.
+    path = os.path.join(root, name)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(fd, "rb") as f:
+            body = f.read(cap + 1)
+    except OSError as e:
+        raise InstallError(f"could not read {name} from {root}: {e}")
+    if len(body) > cap:
+        raise InstallError(f"{name}: exceeds {cap} bytes")
     return body
 
 
@@ -150,6 +181,27 @@ def close_rapl_counters():
             pass
 
 
+def retire_boot_cache():
+    if os.path.lexists(LEGACY_UNIT):
+        run([SYSTEMCTL, "disable", "--now", "dell-power-state.service"])
+        try:
+            os.unlink(LEGACY_UNIT)
+        except FileNotFoundError:
+            pass
+        run([SYSTEMCTL, "daemon-reload"])
+    shutil.rmtree(LEGACY_CACHE, ignore_errors=True)
+
+
+def prepare_backend_dir():
+    # The helper imports its backend from here as root: the directory must be
+    # a real root-owned directory that only root can write to.
+    os.makedirs(BACKEND_DIR, mode=0o755, exist_ok=True)
+    info = os.lstat(BACKEND_DIR)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0:
+        raise InstallError(f"{BACKEND_DIR} is not a root-owned directory")
+    os.chmod(BACKEND_DIR, 0o755)
+
+
 def write_sudoers(user):
     fd = os.open(SUDOERS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o440)
     with os.fdopen(fd, "w") as f:
@@ -180,16 +232,17 @@ def stage(destdir, blob, mode):
     return tmp
 
 
-def install(commit, user):
-    manifest = parse_manifest(fetch(commit, MANIFEST_NAME, MANIFEST_CAP)
-                              .decode("utf-8", "strict"))
+def install(read, user):
+    manifest = parse_manifest(
+        read(MANIFEST_NAME, MANIFEST_CAP).decode("utf-8", "strict")
+    )
 
     # Fetch and digest-verify every artifact BEFORE touching the system.
     blobs = {}
     for rel in PAYLOADS:
         if rel not in manifest:
             raise InstallError(f"publisher manifest has no entry for {rel}")
-        blob = fetch(commit, rel, PAYLOAD_CAP)
+        blob = read(rel, PAYLOAD_CAP)
         if sha256_bytes(blob) != manifest[rel]:
             raise InstallError(f"{rel}: digest mismatch against the publisher manifest")
         blobs[rel] = blob
@@ -205,6 +258,7 @@ def install(commit, user):
     staged = {}
     backups = {}
     try:
+        prepare_backend_dir()
         # 2. Stage every payload next to its destination (O_EXCL, 0600).
         for rel, blob in blobs.items():
             dest, mode = PAYLOADS[rel]
@@ -260,44 +314,54 @@ def install(commit, user):
             except OSError:
                 pass
 
-    # 6. Housekeeping, then activation.
+    # 6. Housekeeping.
     close_rapl_counters()
-    run([SYSTEMCTL, "daemon-reload"])
-    if run([SYSTEMCTL, "enable", "--now", "dell-power-state.service"]) != 0:
-        raise InstallError("systemctl enable dell-power-state.service failed")
+    retire_boot_cache()
 
     if run([HELPER, "status"], timeout=15) == 0:
         print("System components installed and working.")
     else:
-        print("Components installed, but the helper reported an error (non-Dell machine?).")
+        print(
+            "Components installed, but the helper reported an error (non-Dell machine?)."
+        )
 
 
 def uninstall():
-    for path in (HELPER, POLICY, SUDOERS):
+    for path in (SUDOERS, HELPER, BACKEND, POLICY):
         try:
             os.unlink(path)
         except FileNotFoundError:
             pass
-    close_rapl_counters()
-    run([SYSTEMCTL, "disable", "--now", "dell-power-state.service"])
     try:
-        os.unlink(UNIT)
-    except FileNotFoundError:
+        os.rmdir(BACKEND_DIR)
+    except OSError:
         pass
-    run([SYSTEMCTL, "daemon-reload"])
-    shutil.rmtree("/run/dell-power", ignore_errors=True)
+    close_rapl_counters()
+    retire_boot_cache()
     print("System components removed.")
 
 
 def main():
     if os.geteuid() != 0:
-        fail("internal error: the installer core must run as root (use ./install-system.sh)")
+        fail(
+            "internal error: the installer core must run as root (use ./install-system.sh)"
+        )
 
     args = sys.argv[1:]
     if args == ["--uninstall"]:
         uninstall()
         return
-    if len(args) != 1 or not re.fullmatch(r"[0-9a-f]{40}", args[0]):
+    if len(args) == 2 and args[0] == "--local" and os.path.isabs(args[1]):
+        root = args[1]
+
+        def read(name, cap):
+            return read_checkout(root, name, cap)
+    elif len(args) == 1 and re.fullmatch(r"[0-9a-f]{40}", args[0]):
+        commit = args[0]
+
+        def read(name, cap):
+            return fetch(commit, name, cap)
+    else:
         fail("internal error: expected the checkout HEAD commit")
 
     user = os.environ.get("SUDO_USER", "")
@@ -308,7 +372,7 @@ def main():
             user = ""
 
     try:
-        install(args[0], user)
+        install(read, user)
     except InstallError as e:
         fail(str(e))
 
